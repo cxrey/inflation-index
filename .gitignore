@@ -11,3 +11,6 @@ wheels/
 
 # Secrets (FRED API key) - never save in Git
 .streamlit/secrets.toml
+
+# Backup copies of downloaded data
+saved_data/
