@@ -184,6 +184,104 @@ def percent_text(value: float, show_multiple: bool = False) -> str:
     return text
 
 
+# --- Version 1.2: rates, cash buying power and weight buttons ---
+# These functions use fractions for rates: 0.10 means 10% per year.
+
+
+def per_year(start_value: float, end_value: float, months: int) -> float | None:
+    """How much a line changed per year: (end / start) ^ (12 / months) - 1.
+
+    None (shown as "—") when the period is shorter than 12 months.
+    Example: 100 -> 121 over 24 months is 0.10 (10% per year).
+    """
+    if months < 12:
+        return None
+    return (end_value / start_value) ** (12 / months) - 1
+
+
+def cash_loss_per_year(basket_rate: float) -> float:
+    """Share of buying power cash loses per year against a rising basket.
+
+    1 - 1 / (1 + rate). Basket up 25% per year: cash loses 20% per year.
+    A negative result means cash gains (basket falling 10%: gains 1/9).
+    """
+    return 1 - 1 / (1 + basket_rate)
+
+
+def rate_versus(your_rate: float, other_rate: float) -> float:
+    """Your money's change in buying power per year: (1 + yours) / (1 + other) - 1.
+
+    Your rate 4%, basket 30%: (1.04 / 1.30) - 1 = -0.20 (you lose 20% per year).
+    """
+    return (1 + your_rate) / (1 + other_rate) - 1
+
+
+def change_since_start(values: pd.Series) -> pd.Series:
+    """% change of each month since the first month: 100, 150 -> 0%, +50%."""
+    return 100 * (values / values.iloc[0] - 1)
+
+
+def cash_line(values: pd.Series) -> pd.Series:
+    """% change in how much cash buys, month by month: 100 × V_start / V_now - 100.
+
+    With CPI it is cash in consumer goods (CPI 100 -> 125 gives -20%); with the
+    basket index it is cash in your basket (100 -> 1,000 gives -90%).
+    """
+    return 100 * values.iloc[0] / values - 100
+
+
+def worst_drop(values: pd.Series) -> float:
+    """Worst drop from a previous high, as a fraction: min(V / highest so far - 1).
+
+    100, 150, 75, 120 -> 75 / 150 - 1 = -0.50.
+    """
+    return (values / values.cummax() - 1).min()
+
+
+def make_100(weights: dict[str, float]) -> dict[str, float]:
+    """Scale weights to total 100%, keeping their proportions.
+
+    50/30/10 (total 90) -> 500/9, 100/3, 100/9. If the total is 0, nothing
+    can be scaled, so the weights are returned unchanged.
+    """
+    total = sum(weights.values())
+    if total == 0:
+        return dict(weights)
+    return {name: weight * 100 / total for name, weight in weights.items()}
+
+
+def split_evenly(names: list[str]) -> dict[str, float]:
+    """Give every name an equal share of 100%: 3 assets -> 100/3 each."""
+    return {name: 100 / len(names) for name in names} if names else {}
+
+
+def period_rates(prices: pd.DataFrame, cpi: pd.Series, weights: dict[str, float], end,
+                 years=(1, 3, 5, 10, 20)) -> dict[str, dict[int, float | None]]:
+    """Basket and CPI per year over the last 1, 3, 5, 10 and 20 years to `end`.
+
+    Each period is calculated fresh: the basket restarts with `weights` (in %)
+    at the period's start. The start is the same month `years` earlier; if
+    that month has no data for every asset and CPI (such as October 2025),
+    the month before is used with its true length. None (shown as "—") when
+    an asset has no data that far back.
+    """
+    available = prices.dropna().index.intersection(cpi.dropna().index)
+    fractions = {name: weight / 100 for name, weight in weights.items()}
+    rates = {"basket": {}, "CPI": {}}
+    for period in years:
+        target = end - pd.DateOffset(years=period)
+        candidates = available[available <= target]
+        if len(candidates) == 0:
+            rates["basket"][period] = rates["CPI"][period] = None
+            continue
+        start = candidates.max()
+        months = months_between(start, end)
+        index = asset_index(prices.loc[[start, end], list(fractions)], fractions)
+        rates["basket"][period] = per_year(index.iloc[0], index.iloc[-1], months)
+        rates["CPI"][period] = per_year(cpi[start], cpi[end], months)
+    return rates
+
+
 def last_month_set_by(series: dict[str, pd.DataFrame]) -> list[str]:
     """Names of the series whose data ends earliest.
 
