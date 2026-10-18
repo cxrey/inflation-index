@@ -1,4 +1,4 @@
-"""Wealth Inflation Tracker: the web page.
+"""Asset Inflation Tracker: the web page.
 
 Run it with:  uv run streamlit run app.py
 
@@ -279,11 +279,11 @@ def reset_clicked():
     st.session_state.pop("earliest", None)
 
 
-st.set_page_config(page_title="Wealth Inflation Tracker")
+st.set_page_config(page_title="Asset Inflation Tracker")
 if "first_load_done" not in st.session_state:
     st.session_state.update(FIRST_LOAD)
     st.session_state["first_load_done"] = True
-st.title("Wealth Inflation Tracker")
+st.title("Asset Inflation Tracker")
 st.caption("Choose your assets and weights in the sidebar.")
 
 # Everything below goes into this container, so the sources line (written

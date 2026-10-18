@@ -1,4 +1,4 @@
-"""Calculations for the Wealth Inflation Tracker.
+"""Calculations for the Asset Inflation Tracker.
 
 Every function here expects monthly data with one row per month, where each
 month is stored as its first day (for example 2024-03-01 for March 2024).

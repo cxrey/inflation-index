@@ -30,6 +30,13 @@ What one monthly value is, for each series:
                             includes the 12th of the month
     Money supply (M2SL)     the amount of M2 money in the month (seasonally
                             adjusted); a comparison line only
+    Market size (only for the "Weight by market size" button):
+    US stocks (World Bank)  value of US-listed domestic companies, year-end, $
+    US homes (HNOREMQ027S)  households' and nonprofits' real estate at market
+                            value, quarter-end, millions of $
+    Crypto market caps      monthly average of daily market caps, $
+    Gold                    a yearly stock table built from one World Gold
+                            Council figure and USGS mine production (below)
 """
 
 import html
@@ -47,6 +54,7 @@ from calc import monthly_average
 
 FRED_URL = "https://api.stlouisfed.org/fred/series/observations"
 COINMETRICS_URL = "https://community-api.coinmetrics.io/v4/timeseries/asset-metrics"
+WORLD_BANK_URL = "https://api.worldbank.org/v2/country/USA/indicator/CM.MKT.LCAP.CD"
 SHILLER_PAGE = "https://shillerdata.com/"
 PINK_SHEET_PAGE = "https://www.worldbank.org/en/research/commodity-markets"
 # First month used for each Pink Sheet column (earlier prices were not set by
@@ -246,15 +254,16 @@ def pink_sheet(column: str) -> pd.DataFrame:
     return table.reset_index(drop=True)
 
 
-def crypto(asset: str) -> pd.DataFrame:
-    """Download daily prices for one coin (for example "btc") from Coin Metrics
-    and turn them into monthly averages (complete months only).
+def crypto(asset: str, metric: str = "PriceUSD") -> pd.DataFrame:
+    """Download a daily Coin Metrics series for one coin (for example "btc")
+    and turn it into monthly averages (complete months only).
 
-    Each value is the average of every daily price in that month.
+    metric: "PriceUSD" (the price, the default) or a market cap, see
+    crypto_market_cap. Each value is the average of every day in that month.
     """
     params = {
         "assets": asset,
-        "metrics": "PriceUSD",
+        "metrics": metric,
         "frequency": "1d",
         "page_size": 10000,  # the most days Coin Metrics sends per reply
         "paging_from": "start",
@@ -269,13 +278,70 @@ def crypto(asset: str) -> pd.DataFrame:
         params = None  # the next-page link already contains all the settings
 
     daily = pd.DataFrame(rows)
-    if "PriceUSD" not in daily.columns:
-        raise ValueError(f"Coin Metrics sent no PriceUSD data for '{asset}'.")
+    if metric not in daily.columns:
+        raise ValueError(f"Coin Metrics sent no {metric} data for '{asset}'.")
     daily = pd.DataFrame({
         "date": pd.to_datetime(daily["time"]).dt.tz_localize(None).dt.normalize(),
-        "value": pd.to_numeric(daily["PriceUSD"], errors="coerce"),
+        "value": pd.to_numeric(daily[metric], errors="coerce"),
     })
     return monthly_average(daily.dropna())
+
+
+# --- Market size (for the "Weight by market size" button) ---
+
+def crypto_market_cap(asset: str) -> pd.DataFrame:
+    """A coin's market cap in US dollars, as monthly averages (complete months only).
+
+    The exact market cap (CapMrktCurUSD) from each coin's first day; Solana's
+    exact figure isn't on Coin Metrics' free service, so its estimate
+    (CapMrktEstUSD, from 11 April 2020) is used instead.
+    """
+    return crypto(asset, "CapMrktEstUSD" if asset == "sol" else "CapMrktCurUSD")
+
+
+def world_bank_us_market_cap() -> pd.DataFrame:
+    """Total value of US companies listed on US exchanges, in US dollars, at
+    each year-end (World Bank indicator CM.MKT.LCAP.CD, from the World
+    Federation of Exchanges; licence CC BY 4.0). Dated December of each year.
+    """
+    params = {"format": "json", "per_page": 1000}
+    body = fetch(WORLD_BANK_URL, FILE_TIMEOUT, "the World Bank", params).json()
+    if len(body) < 2 or not body[1]:
+        raise ValueError("The World Bank sent no market-capitalization data.")
+    table = pd.DataFrame({
+        "date": [pd.Timestamp(year=int(row["date"]), month=12, day=1) for row in body[1]],
+        "value": pd.to_numeric([row["value"] for row in body[1]], errors="coerce"),
+    })
+    return table.dropna().sort_values("date").reset_index(drop=True)
+
+
+# Gold: the world's above-ground stock is built from two public sources.
+# 1. One figure from the World Gold Council (Goldhub, "Above-ground stocks",
+#    https://www.gold.org/goldhub/data/above-ground-stocks): 222,600 tonnes in
+#    total at 30 June 2026, of which investment gold (bars and coins ~47,800 t,
+#    ETFs ~4,000 t, central banks ~39,000 t) is about 90,800 t. Only this one
+#    figure is used; no WGC data is downloaded.
+GOLD_STOCK_ANCHOR_TONNES = 222_600
+GOLD_STOCK_ANCHOR_DATE = pd.Timestamp("2026-06-30")
+GOLD_INVESTMENT_TONNES = 90_800  # bars and coins + ETFs + central banks
+# 2. World gold mine production in tonnes (public domain, U.S. Geological Survey):
+#    1971-2022 from "Historical Statistics for Mineral and Material Commodities
+#    in the United States" (Data Series 140, gold, world production column);
+#    2023 from Mineral Commodity Summaries 2025; 2024 and 2025 (estimated) from
+#    Mineral Commodity Summaries 2026, the latest edition.
+GOLD_WORLD_PRODUCTION_TONNES = {
+    1971: 1450, 1972: 1390, 1973: 1350, 1974: 1250, 1975: 1200, 1976: 1210,
+    1977: 1210, 1978: 1210, 1979: 1210, 1980: 1220, 1981: 1280, 1982: 1340,
+    1983: 1400, 1984: 1460, 1985: 1530, 1986: 1610, 1987: 1660, 1988: 1870,
+    1989: 2010, 1990: 2180, 1991: 2160, 1992: 2260, 1993: 2280, 1994: 2260,
+    1995: 2230, 1996: 2290, 1997: 2450, 1998: 2500, 1999: 2570, 2000: 2590,
+    2001: 2600, 2002: 2550, 2003: 2540, 2004: 2420, 2005: 2470, 2006: 2370,
+    2007: 2350, 2008: 2300, 2009: 2490, 2010: 2590, 2011: 2680, 2012: 2740,
+    2013: 2960, 2014: 3040, 2015: 3100, 2016: 3180, 2017: 3260, 2018: 3310,
+    2019: 3260, 2020: 3050, 2021: 3120, 2022: 3160,
+    2023: 3250,  # Mineral Commodity Summaries 2025
+    2024: 3280, 2025: 3300,  # Mineral Commodity Summaries 2026 (2025 estimated)
+}
 
 
 if __name__ == "__main__":
@@ -312,3 +378,12 @@ if __name__ == "__main__":
               f"{first.date:%Y-%m} {first.value} to {last.date:%Y-%m} {last.value}" + (f"  NOTE: {note}" if note else ""))
     for coin in ["btc", "eth", "zec", "xmr", "sol"]:
         show(coin.upper(), crypto, coin)
+
+    # Market size: US stocks (World Bank), US homes (FRED), crypto market caps.
+    show("US_MARKET_CAP", world_bank_us_market_cap)
+    show("HNOREMQ027S", fred_series, "HNOREMQ027S", key)
+    for coin in ["btc", "eth", "zec", "xmr", "sol"]:
+        show(f"CAP_{coin.upper()}", crypto_market_cap, coin)
+    years = sorted(GOLD_WORLD_PRODUCTION_TONNES)
+    print(f"\nGold production table: {len(years)} years, {years[0]}-{years[-1]}, "
+          f"total {sum(GOLD_WORLD_PRODUCTION_TONNES.values()):,} t")
