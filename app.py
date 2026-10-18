@@ -12,10 +12,11 @@ import streamlit as st
 
 from calc import (
     INDEX_NAME,
+    asset_index,
     asset_lines,
     basket_and_total,
     change_table,
-    chart_lines,
+    comparison_line,
     current_weights,
     last_month_set_by,
     line_up,
@@ -27,6 +28,7 @@ from calc import (
     set_section_total,
     split_categories,
     split_evenly,
+    valid_months,
     weights_add_up,
 )
 from data import (
@@ -56,6 +58,8 @@ SERIES = {
     "Monero": ("XMR", crypto, ["xmr"]),
     "Solana": ("SOL", crypto, ["sol"]),
 }
+M2 = "Money supply (M2)"
+SERIES[M2] = ("M2SL", fred_series, ["M2SL"])
 # Luxury homes: one series per city; only the selected city is downloaded.
 LUXURY = "Luxury homes"
 SERIES.update({
@@ -104,10 +108,11 @@ FIRST_LOAD = {
     "luxury_section": False,
     "show_assets": False,
     "show_wages": True,
+    "show_m2": False,
     "log_scale": True,
 }
 # A clearly different colour for each line (readable on light and dark backgrounds).
-LINE_COLORS = {INDEX_NAME: "#3b82f6", "CPI": "#f59e0b", "Wages": "#10b981"}
+LINE_COLORS = {INDEX_NAME: "#3b82f6", "CPI": "#f59e0b", "Wages": "#10b981", M2: "#a855f7"}
 # Colours for the optional individual-asset lines (distinct from the main lines).
 ASSET_COLORS = {
     "US home prices": "#a16207", "S&P 500": "#ef4444",
@@ -264,7 +269,7 @@ st.caption("Choose your assets and weights in the sidebar.")
 # next) always stays at the bottom, even when the page stops early.
 main = st.container()
 st.caption(
-    "Sources: CPI, wages, Nasdaq, US home prices and luxury homes from "
+    "Sources: CPI, wages, money supply, Nasdaq, US home prices and luxury homes from "
     "[FRED](https://fred.stlouisfed.org/), Federal Reserve Bank of St. Louis · "
     "S&P 500 from [Robert Shiller](https://shillerdata.com/) · "
     "Gold, silver and platinum from the [World Bank Pink Sheet](https://www.worldbank.org/en/research/commodity-markets) · "
@@ -411,32 +416,32 @@ show_assets = st.sidebar.checkbox("Show individual assets", key="show_assets")
 
 st.sidebar.header("Compare with")
 st.sidebar.caption("CPI is always shown.")
-# Wages start in 1964; turning them off lets the chart start as early as CPI (1913).
+# Wages and money supply are drawn only where they have data: they never
+# change the start or end month.
 show_wages = st.sidebar.checkbox("Wages", key="show_wages")
-comparisons = ["CPI", "Wages"] if show_wages else ["CPI"]
+show_m2 = st.sidebar.checkbox(M2, key="show_m2")
 
 with main:
     # Drawn before anything that can stop the page: Streamlit forgets a
     # switch's setting whenever a run ends without drawing it.
     log_scale = st.toggle("Logarithmic scale", key="log_scale")
 
-    for needed in comparisons:
-        if needed not in tables:
-            st.error(f"{needed} could not be loaded, so the chart can't be drawn.")
-            st.stop()
-    if not weights:
-        st.info("Choose at least one asset.")
+    if "CPI" not in tables:
+        st.error("CPI could not be loaded, so the chart can't be drawn.")
         st.stop()
+    if not weights:
+        st.info("Choose at least one asset and give it a weight.")
+    elif not weights_ok:
+        st.warning("Weights must add up to 100%. Results for your basket are hidden until they do.")
 
-    # Line up only the series that are shown.
-    chosen = {name: tables[name] for name in [*comparisons, *weights]}
-    lined_up = line_up(chosen)
-    if lined_up.empty:
+    # The dates: only the basket's assets above 0% and CPI decide them.
+    basket_tables = {name: tables[name] for name in weights}
+    months = valid_months(basket_tables, tables["CPI"])
+    if not months:
         st.error("The selected series have no months in common.")
         st.stop()
 
-# The start-month menu offers only months where every chosen series has data.
-months = list(lined_up.index)
+# The start-month menu offers only months where the basket and CPI have data.
 earliest = months[0]
 chosen_start = st.session_state.get("start")
 # Move to the earliest month if the chosen month is no longer offered, or if
@@ -447,17 +452,34 @@ st.session_state["earliest"] = earliest
 start = st.sidebar.selectbox("Start month", months, format_func=month_name, key="start")
 
 with main:
-    if not weights_ok:
-        st.stop()  # the sidebar already explains the problem
+    end = months[-1]
+    show_basket = bool(weights) and weights_ok
 
-    lines = chart_lines(lined_up, start, weights)
+    # Every month from start to end, so a missing month shows as a break in
+    # its line (October 2025 CPI) and a line that ends early simply stops.
+    lines = pd.DataFrame(index=pd.date_range(start, end, freq="MS"))
+    if show_basket:
+        prices = line_up(basket_tables).loc[start:end]  # the basket's own months
+        lines[INDEX_NAME] = asset_index(prices, {name: weight / 100 for name, weight in weights.items()})
+    comparison_notes = []
+    for name, shown in [("CPI", True), ("Wages", show_wages), (M2, show_m2)]:
+        if not shown:
+            continue
+        if name not in tables:
+            comparison_notes.append(f"{name} could not be loaded.")
+            continue
+        line, note = comparison_line(name, tables[name], start, end)
+        if note:
+            comparison_notes.append(note)  # for example "Wages data starts in January 1964."
+        else:
+            lines[name] = line
 
     # The chart may also show each asset on its own; the % change table does not.
-    chart = pd.concat([lines, asset_lines(lined_up, start, weights)], axis=1) if show_assets else lines
+    chart = lines.join(asset_lines(prices, start, weights)) if show_basket and show_assets else lines
 
     figure = go.Figure()
     for name in chart.columns:
-        if name in LINE_COLORS:  # the main lines: index, CPI, wages
+        if name in LINE_COLORS:  # the main lines: index, CPI, wages, money supply
             style = {"color": LINE_COLORS[name]}
         else:  # individual assets: thinner and dotted, so the main lines stand out
             style = {"color": ASSET_COLORS[name], "width": 1.5, "dash": "dot"}
@@ -483,15 +505,19 @@ with main:
         alt=f"Line chart of {', '.join(chart.columns)}, all starting at 100 in {month_name(start)}.",
     )
 
-    end = lines.index[-1]
-    set_by = ", ".join(last_month_set_by(chosen))
-    st.caption(
-        f"Start: {month_name(start)} · Data through: {month_name(end)} (set by {set_by}) · "
-        f"{len(lines)} monthly values"
-    )
+    set_by = ", ".join(last_month_set_by({**basket_tables, "CPI": tables["CPI"]}))
+    st.caption(f"Start: {month_name(start)} · Data through: {month_name(end)} (set by {set_by})")
+    for note in comparison_notes:
+        st.info(note)
 
     # The % change table (yearly change is left empty for periods under 12 months).
     changes = change_table(lines)
+    # A line that ends before the end month is measured to its own last month.
+    changes.index = [
+        f"{name} (through {month_name(lines[name].last_valid_index())})"
+        if lines[name].last_valid_index() < end else name
+        for name in changes.index
+    ]
     st.markdown(
         f"**Change from {month_name(start)} to {month_name(end)} "
         f"({duration_text(months_between(start, end))})**"
@@ -505,19 +531,21 @@ with main:
         alt="Table of total and yearly percent change for each line on the chart.",
     )
 
-    # Current weights: faster-rising assets become a bigger share over time.
-    shares = current_weights(lined_up, start, weights)
-    st.caption(
-        f"Current weights ({month_name(end)}): "
-        + " · ".join(f"{name} {share_text(share)}" for name, share in shares.items())
-    )
-    if len(shares) >= 2:  # with one asset it is always 100%, so no warning
-        for name, share in shares.items():
-            if share > DOMINANT_SHARE:
-                st.warning(
-                    f"{name} now makes up {share_text(share)} of your index, "
-                    f"so the index mostly follows {name}."
-                )
+    if show_basket:
+        # Current weights: faster-rising assets become a bigger share over time.
+        shares = current_weights(prices, start, weights)
+        st.caption(
+            f"Current weights ({month_name(prices.index[-1])}): "
+            + " · ".join(f"{name} {share_text(share)}" for name, share in shares.items())
+        )
+        if len(shares) >= 2:  # with one asset it is always 100%, so no warning
+            for name, share in shares.items():
+                if share > DOMINANT_SHARE:
+                    st.warning(
+                        f"{name} now makes up {share_text(share)} of your index, "
+                        f"so the index mostly follows {name}."
+                    )
+    # Notes about the data itself are shown whenever the asset is above 0%.
     if "US home prices" in weights or any(name.startswith(LUXURY) for name in weights):
         st.info(CASE_SHILLER_NOTE)
     if any(name.startswith(LUXURY) for name in weights):

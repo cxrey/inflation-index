@@ -135,6 +135,35 @@ def needs_bitcoin_note(weights: dict[str, int], start) -> bool:
     return "Bitcoin" in weights and start < BITCOIN_RELIABLE_FROM
 
 
+def valid_months(basket: dict[str, pd.DataFrame], cpi: pd.DataFrame) -> list[pd.Timestamp]:
+    """The months the chart can start and end in.
+
+    Only the basket's assets (those above 0%) and CPI decide them: a month
+    counts if every one of them has a value. Wages and money supply never
+    limit the dates. With no basket asset above 0%, CPI alone decides.
+    """
+    return list(line_up({**basket, "CPI": cpi}).index)
+
+
+def comparison_line(name: str, table: pd.DataFrame, start, end) -> tuple[pd.Series | None, str | None]:
+    """A comparison line (CPI, wages, money supply) from start to end, starting at 100.
+
+    Every month from start to end is included, so a missing month shows as a
+    break in the line (such as October 2025 CPI) and a line whose data ends
+    early simply stops. If the line has no value in the start month, it is
+    not drawn: the result is (None, a note such as "Wages data starts in
+    January 1964.").
+    """
+    values = table.set_index(table["date"].dt.to_period("M").dt.to_timestamp())["value"]
+    if start not in values.index:
+        first = values.index.min()
+        if first > start:
+            return None, f"{name} data starts in {first:%B %Y}."
+        return None, f"{name} has no value for {start:%B %Y}."
+    months = pd.date_range(start, end, freq="MS")
+    return 100 * values.reindex(months) / values[start], None
+
+
 def months_between(start: pd.Timestamp, end: pd.Timestamp) -> int:
     """Calendar months from start to end: January 2024 to January 2026 is 24.
 
@@ -153,10 +182,13 @@ def change_table(lines: pd.DataFrame) -> pd.DataFrame:
                     when the period is shorter than 12 months, because
                     turning a short period into a yearly rate exaggerates it.
     """
-    months = months_between(lines.index[0], lines.index[-1])
     rows = {}
     for name in lines.columns:
-        growth = lines[name].iloc[-1] / lines[name].iloc[0]
+        # Each line from its first to its last value: a line may stop early
+        # (money supply ends a month before CPI) or have gaps (October 2025 CPI).
+        values = lines[name].dropna()
+        months = months_between(values.index[0], values.index[-1])
+        growth = values.iloc[-1] / values.iloc[0]
         rows[name] = {
             "Total change": (growth - 1) * 100,
             "Yearly change": (growth ** (12 / months) - 1) * 100 if months >= 12 else None,
