@@ -81,11 +81,14 @@ def fetch(url: str, timeout: int, source: str, params: dict | None = None) -> re
     return response
 
 
-def download_with_backup(name, download, *inputs, folder=SAVED_DATA, wait_seconds=WAIT_SECONDS):
+def download_with_backup(name, download, *inputs, folder=SAVED_DATA, wait_seconds=WAIT_SECONDS, label=None):
     """Run download(*inputs), retrying temporary failures and keeping a backup.
 
     Returns (table, note). note is None when the data is fresh; otherwise it
     explains that the saved copy is being shown, and why.
+
+    name is the backup file name; label is the name used in the note
+    (for example "S&P 500" instead of "SP500"). Without a label, name is used.
     """
     path = Path(folder) / f"{name}.csv"
     problem = None
@@ -110,7 +113,7 @@ def download_with_backup(name, download, *inputs, folder=SAVED_DATA, wait_second
     saved_on = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d")
     latest = saved["date"].max().strftime("%B %Y")
     note = (
-        f"{name} could not be downloaded ({problem}). "
+        f"{label or name} could not be downloaded ({problem}). "
         f"Showing the copy saved on {saved_on} (latest month: {latest})."
     )
     return saved, note
