@@ -17,6 +17,7 @@ from calc import (
     last_month_set_by,
     line_up,
     months_between,
+    percent_text,
     power_of_ten_ticks,
 )
 from data import crypto, download_with_backup, fred_series, pink_sheet, sp500
@@ -69,10 +70,6 @@ CASE_SHILLER_NOTE = (
 def month_name(date) -> str:
     return date.strftime("%B %Y")  # for example "January 2015"
 
-
-def percent_text(value) -> str:
-    """+9,931.90%, -19.00%, or a dash when there is no value."""
-    return "—" if pd.isna(value) else f"{value:+,.2f}%"
 
 
 def duration_text(months: int) -> str:
@@ -232,8 +229,12 @@ with main:
         f"**Change from {month_name(start)} to {month_name(end)} "
         f"({duration_text(months_between(start, end))})**"
     )
+    formatted = pd.DataFrame({
+        "Total change": changes["Total change"].map(lambda value: percent_text(value, show_multiple=True)),
+        "Yearly change": changes["Yearly change"].map(percent_text),
+    }).rename_axis("Line")
     st.table(
-        changes.map(percent_text).rename_axis("Line"),
+        formatted,
         alt="Table of total and yearly percent change for each line on the chart.",
     )
     if "US home prices" in weights:

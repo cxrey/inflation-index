@@ -127,6 +127,26 @@ def change_table(lines: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame.from_dict(rows, orient="index")
 
 
+def percent_text(value: float, show_multiple: bool = False) -> str:
+    """Write a % change for the table.
+
+    Under 1,000%: two decimals, for example +990.42% or -19.00%.
+    1,000% or more: no decimals, and with show_multiple the multiple of the
+    start value, for example +24,755,848% (247,559×). The multiple is
+    1 + change / 100; it gets one decimal below 100× (+1,000% is 11.0×).
+    No value (yearly change for a short period): a dash.
+    """
+    if pd.isna(value):
+        return "—"
+    if abs(round(value, 2)) < 1000:
+        return f"{value:+,.2f}%"
+    text = f"{value:+,.0f}%"
+    if show_multiple:
+        multiple = 1 + value / 100
+        text += f" ({multiple:,.0f}×)" if multiple >= 100 else f" ({multiple:,.1f}×)"
+    return text
+
+
 def last_month_set_by(series: dict[str, pd.DataFrame]) -> list[str]:
     """Names of the series whose data ends earliest.
 

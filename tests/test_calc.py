@@ -11,6 +11,7 @@ from calc import (
     last_month_set_by,
     line_up,
     monthly_average,
+    percent_text,
     power_of_ten_ticks,
     rebase,
 )
@@ -163,6 +164,20 @@ def test_power_of_ten_ticks():
     # A wide range, as with Bitcoin from 2010 (no "G" for billions).
     _, labels = power_of_ten_ticks(0.5, 2e8)
     assert labels == ["0.1", "1", "10", "100", "1k", "10k", "100k", "1M", "10M", "100M", "1B"]
+
+
+def test_percent_text():
+    # Under 1,000%: two decimals, no multiple.
+    assert percent_text(990.42, show_multiple=True) == "+990.42%"
+    assert percent_text(-19, show_multiple=True) == "-19.00%"
+    # 1,000% or more: no decimals, plus the multiple (1 + change / 100).
+    assert percent_text(1000, show_multiple=True) == "+1,000% (11.0×)"
+    assert percent_text(9931.93, show_multiple=True) == "+9,932% (100×)"
+    assert percent_text(24755848, show_multiple=True) == "+24,755,848% (247,559×)"
+    # Yearly change column: no decimals at 1,000% or more, but no multiple.
+    assert percent_text(1234.4) == "+1,234%"
+    # No value: a dash.
+    assert percent_text(float("nan")) == "—"
 
 
 def test_shiller_date():
