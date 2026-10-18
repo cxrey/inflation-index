@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from calc import asset_index, line_up, monthly_average, rebase
+from calc import asset_index, last_month_set_by, line_up, monthly_average, rebase
 from data import TemporaryDownloadError, download_with_backup, pink_date, shiller_date
 
 # Two months, stored as the first day of each month.
@@ -80,6 +80,14 @@ def test_line_up_refuses_two_values_in_one_month():
     a = pd.DataFrame({"date": pd.to_datetime(["2024-01-01", "2024-01-31"]), "value": [1, 2]})
     with pytest.raises(ValueError, match="more than one value"):
         line_up({"A": a})
+
+
+def test_last_month_set_by():
+    # A and C end in March 2024, B in May 2024: A and C decide the last month.
+    def ends(last):
+        return pd.DataFrame({"date": pd.to_datetime(["2024-01-01", last]), "value": [1, 2]})
+
+    assert last_month_set_by({"A": ends("2024-03-01"), "B": ends("2024-05-01"), "C": ends("2024-03-01")}) == ["A", "C"]
 
 
 def test_shiller_date():

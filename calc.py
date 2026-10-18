@@ -55,6 +55,17 @@ def line_up(series: dict[str, pd.DataFrame]) -> pd.DataFrame:
     return lined_up
 
 
+def last_month_set_by(series: dict[str, pd.DataFrame]) -> list[str]:
+    """Names of the series whose data ends earliest.
+
+    These decide the last month of the chart. If several end in the same
+    month, all of them are returned.
+    """
+    last = {name: table["date"].max().to_period("M") for name, table in series.items()}
+    earliest = min(last.values())
+    return [name for name, month in last.items() if month == earliest]
+
+
 def rebase(values: pd.Series) -> pd.Series:
     """Rescale a series so it starts at 100: 100 × value_t / value_0.
 

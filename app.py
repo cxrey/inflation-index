@@ -9,6 +9,7 @@ clicks or types on the page, so downloads are remembered with st.cache_data.
 import pandas as pd
 import streamlit as st
 
+from calc import last_month_set_by, line_up
 from data import crypto, download_with_backup, fred_series, pink_sheet, sp500
 
 # Every series: friendly name -> (backup file name, download function, inputs).
@@ -46,45 +47,24 @@ def load(name: str) -> tuple[pd.DataFrame, str | None]:
     return download_with_backup(file_name, fresh_download, name, label=name)
 
 
+ASSETS = [name for name in SERIES if name not in ("CPI", "Wages")]
+DEFAULT_WEIGHTS = {"S&P 500": 100}  # ticked when the page first opens
+CASE_SHILLER_NOTE = (
+    "US home prices (Case-Shiller) are a three-month moving average: each "
+    "month's value covers that month and the two before it."
+)
+
+
+def month_name(date) -> str:
+    return date.strftime("%B %Y")  # for example "January 2015"
+
+
 st.set_page_config(page_title="Wealth Inflation Tracker")
 st.title("Wealth Inflation Tracker")
 
-# Check that the key exists without showing it. (Streamlit displays any value
-# left alone on its own line, so never write st.secrets[...] by itself.)
-try:
-    has_key = "FRED_API_KEY" in st.secrets
-except Exception:  # there is no secrets.toml file at all
-    has_key = False
-if not has_key:
-    st.error("No FRED API key found. Add the line FRED_API_KEY = \"...\" to .streamlit/secrets.toml.")
-    st.stop()
-
-tables = {}
-for name in SERIES:
-    with st.spinner(f"Downloading {name}…"):
-        try:
-            table, note = load(name)
-        except Exception as error:
-            st.error(f"{name} could not be loaded: {error}")
-            continue
-    if note:
-        st.warning(note)
-    tables[name] = table
-
-# Temporary summary, to confirm everything loaded (replaced in 7c and 7d).
-st.subheader("Loaded data")
-st.table(
-    pd.DataFrame([
-        {
-            "Series": name,
-            "First month": table["date"].min().strftime("%B %Y"),
-            "Last month": table["date"].max().strftime("%B %Y"),
-            "Months": len(table),
-        }
-        for name, table in tables.items()
-    ]).set_index("Series")
-)
-
+# Everything below the title goes into this container, so the sources line
+# (written next) always stays at the bottom, even when the page stops early.
+main = st.container()
 st.caption(
     "Sources: CPI, wages and US home prices from "
     "[FRED](https://fred.stlouisfed.org/), Federal Reserve Bank of St. Louis · "
@@ -94,3 +74,93 @@ st.caption(
     "This product uses the FRED® API but is not endorsed or certified by the "
     "Federal Reserve Bank of St. Louis."
 )
+
+with main:
+    # Check that the key exists without showing it. (Streamlit displays any value
+    # left alone on its own line, so never write st.secrets[...] by itself.)
+    try:
+        has_key = "FRED_API_KEY" in st.secrets
+    except Exception:  # there is no secrets.toml file at all
+        has_key = False
+    if not has_key:
+        st.error("No FRED API key found. Add the line FRED_API_KEY = \"...\" to .streamlit/secrets.toml.")
+        st.stop()
+
+    tables = {}
+    for name in SERIES:
+        with st.spinner(f"Downloading {name}…"):
+            try:
+                table, note = load(name)
+            except Exception as error:
+                st.error(f"{name} could not be loaded: {error}")
+                continue
+        if note:
+            st.warning(note)
+        tables[name] = table
+
+# --- Controls in the sidebar ---
+st.sidebar.header("Your assets")
+weights = {}  # ticked assets with a weight above 0%, in whole percent
+for name in ASSETS:
+    tick_column, weight_column = st.sidebar.columns([3, 2], vertical_alignment="center")
+    ticked = tick_column.checkbox(
+        name,
+        value=name in DEFAULT_WEIGHTS,
+        key=f"use_{name}",
+        disabled=name not in tables,  # could not be loaded and has no backup
+    )
+    if ticked and name in tables:
+        weight = weight_column.number_input(
+            f"{name} weight (%)",
+            min_value=0,
+            max_value=100,
+            value=DEFAULT_WEIGHTS.get(name, 0),
+            step=1,
+            key=f"weight_{name}",
+            label_visibility="collapsed",
+        )
+        if weight > 0:  # 0% counts as not selected
+            weights[name] = weight
+
+total = sum(weights.values())
+if total == 100:
+    st.sidebar.caption("Total: 100%")
+else:
+    st.sidebar.error(f"Weights add up to {total}%. They must add up to 100%.")
+
+with main:
+    for needed in ("CPI", "Wages"):
+        if needed not in tables:
+            st.error(f"{needed} could not be loaded, so the chart can't be drawn.")
+            st.stop()
+    if not weights:
+        st.info("Choose at least one asset.")
+        st.stop()
+
+    chosen = {name: tables[name] for name in ["CPI", "Wages", *weights]}
+    lined_up = line_up(chosen)
+    if lined_up.empty:
+        st.error("The selected series have no months in common.")
+        st.stop()
+
+# The start-month menu offers only months where every chosen series has data.
+months = list(lined_up.index)
+if st.session_state.get("start") not in months:
+    st.session_state["start"] = months[0]  # earliest valid month
+start = st.sidebar.selectbox("Start month", months, format_func=month_name, key="start")
+
+with main:
+    if total != 100:
+        st.stop()  # the sidebar already explains the problem
+
+    end = lined_up.index[-1]
+    set_by = ", ".join(last_month_set_by(chosen))
+    # Temporary summary of the choices (the chart replaces it in 7d).
+    st.markdown("\n".join([
+        f"- **Assets:** {', '.join(f'{name} {weight}%' for name, weight in weights.items())}",
+        f"- **Start:** {month_name(start)}",
+        f"- **Data through:** {month_name(end)} (set by {set_by})",
+        f"- **Months:** {len(lined_up.loc[start:])}",
+    ]))
+    if "US home prices" in weights:
+        st.info(CASE_SHILLER_NOTE)
