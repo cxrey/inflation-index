@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from calc import asset_index, last_month_set_by, line_up, monthly_average, rebase
+from calc import INDEX_NAME, asset_index, chart_lines, last_month_set_by, line_up, monthly_average, rebase
 from data import TemporaryDownloadError, download_with_backup, pink_date, shiller_date
 
 # Two months, stored as the first day of each month.
@@ -88,6 +88,34 @@ def test_last_month_set_by():
         return pd.DataFrame({"date": pd.to_datetime(["2024-01-01", last]), "value": [1, 2]})
 
     assert last_month_set_by({"A": ends("2024-03-01"), "B": ends("2024-05-01"), "C": ends("2024-03-01")}) == ["A", "C"]
+
+
+def test_chart_lines():
+    # Jan -> Feb: index 100 -> 115 (the brief's example), CPI 200 -> 210 (105),
+    # wages 10 -> 12 (120). Starting in March: March becomes 100.
+    lined_up = pd.DataFrame(
+        {"CPI": [200, 210, 220], "Wages": [10, 12, 15], "A": [10, 12, 13], "B": [20, 22, 24]},
+        index=pd.to_datetime(["2024-01-01", "2024-02-01", "2024-03-01"]),
+    )
+    lines = chart_lines(lined_up, pd.Timestamp("2024-01-01"), {"A": 50, "B": 50})
+    assert lines.columns.tolist() == [INDEX_NAME, "CPI", "Wages"]
+    assert lines.loc["2024-02-01"].tolist() == pytest.approx([115, 105, 120], abs=1e-6)
+
+    from_march = chart_lines(lined_up, pd.Timestamp("2024-03-01"), {"A": 50, "B": 50})
+    assert len(from_march) == 1
+    assert from_march.loc["2024-03-01"].tolist() == pytest.approx([100, 100, 100], abs=1e-6)
+
+
+def test_chart_lines_without_wages_before_1964():
+    # Wages switched off, so the chart can start in 1950 (before wages begin).
+    # Index 10 -> 11 (110), CPI 24 -> 25.2 (105).
+    lined_up = pd.DataFrame(
+        {"CPI": [24, 25.2], "A": [10, 11]},
+        index=pd.to_datetime(["1950-01-01", "1950-02-01"]),
+    )
+    lines = chart_lines(lined_up, pd.Timestamp("1950-01-01"), {"A": 100})
+    assert lines.columns.tolist() == [INDEX_NAME, "CPI"]
+    assert lines.loc["1950-02-01"].tolist() == pytest.approx([110, 105], abs=1e-6)
 
 
 def test_shiller_date():

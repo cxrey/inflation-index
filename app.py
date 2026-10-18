@@ -7,9 +7,10 @@ clicks or types on the page, so downloads are remembered with st.cache_data.
 """
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
-from calc import last_month_set_by, line_up
+from calc import INDEX_NAME, chart_lines, last_month_set_by, line_up
 from data import crypto, download_with_backup, fred_series, pink_sheet, sp500
 
 # Every series: friendly name -> (backup file name, download function, inputs).
@@ -49,6 +50,8 @@ def load(name: str) -> tuple[pd.DataFrame, str | None]:
 
 ASSETS = [name for name in SERIES if name not in ("CPI", "Wages")]
 DEFAULT_WEIGHTS = {"S&P 500": 100}  # ticked when the page first opens
+# A clearly different colour for each line (readable on light and dark backgrounds).
+LINE_COLORS = {INDEX_NAME: "#3b82f6", "CPI": "#f59e0b", "Wages": "#10b981"}
 CASE_SHILLER_NOTE = (
     "US home prices (Case-Shiller) are a three-month moving average: each "
     "month's value covers that month and the two before it."
@@ -128,8 +131,14 @@ if total == 100:
 else:
     st.sidebar.error(f"Weights add up to {total}%. They must add up to 100%.")
 
+st.sidebar.header("Compare with")
+st.sidebar.caption("CPI is always shown.")
+# Wages start in 1964; turning them off lets the chart start as early as CPI (1913).
+show_wages = st.sidebar.checkbox("Wages", value=True, key="show_wages")
+comparisons = ["CPI", "Wages"] if show_wages else ["CPI"]
+
 with main:
-    for needed in ("CPI", "Wages"):
+    for needed in comparisons:
         if needed not in tables:
             st.error(f"{needed} could not be loaded, so the chart can't be drawn.")
             st.stop()
@@ -137,7 +146,8 @@ with main:
         st.info("Choose at least one asset.")
         st.stop()
 
-    chosen = {name: tables[name] for name in ["CPI", "Wages", *weights]}
+    # Line up only the series that are shown.
+    chosen = {name: tables[name] for name in [*comparisons, *weights]}
     lined_up = line_up(chosen)
     if lined_up.empty:
         st.error("The selected series have no months in common.")
@@ -145,22 +155,48 @@ with main:
 
 # The start-month menu offers only months where every chosen series has data.
 months = list(lined_up.index)
-if st.session_state.get("start") not in months:
-    st.session_state["start"] = months[0]  # earliest valid month
+earliest = months[0]
+chosen_start = st.session_state.get("start")
+# Move to the earliest month if the chosen month is no longer offered, or if
+# it was the earliest month before this change (so it follows the earliest).
+if chosen_start not in months or chosen_start == st.session_state.get("earliest"):
+    st.session_state["start"] = earliest
+st.session_state["earliest"] = earliest
 start = st.sidebar.selectbox("Start month", months, format_func=month_name, key="start")
 
 with main:
     if total != 100:
         st.stop()  # the sidebar already explains the problem
 
-    end = lined_up.index[-1]
+    lines = chart_lines(lined_up, start, weights)
+    log_scale = st.toggle("Logarithmic scale", value=True, key="log_scale")
+
+    figure = go.Figure()
+    for name in lines.columns:
+        figure.add_trace(go.Scatter(
+            x=lines.index, y=lines[name], name=name, mode="lines",
+            line={"color": LINE_COLORS[name]},
+            hovertemplate="%{y:,.1f}",
+        ))
+    figure.add_hline(y=100, line_dash="dot", line_width=1, line_color="gray")  # the start level
+    figure.update_layout(
+        hovermode="x unified",  # hovering shows every line for that month
+        yaxis_title="Index (start month = 100)",
+        yaxis_type="log" if log_scale else "linear",
+        legend={"orientation": "h", "y": 1.1},
+        margin={"t": 40},
+    )
+    figure.update_xaxes(hoverformat="%B %Y")
+    st.plotly_chart(
+        figure,
+        alt=f"Line chart of {', '.join(lines.columns)}, all starting at 100 in {month_name(start)}.",
+    )
+
+    end = lines.index[-1]
     set_by = ", ".join(last_month_set_by(chosen))
-    # Temporary summary of the choices (the chart replaces it in 7d).
-    st.markdown("\n".join([
-        f"- **Assets:** {', '.join(f'{name} {weight}%' for name, weight in weights.items())}",
-        f"- **Start:** {month_name(start)}",
-        f"- **Data through:** {month_name(end)} (set by {set_by})",
-        f"- **Months:** {len(lined_up.loc[start:])}",
-    ]))
+    st.caption(
+        f"Start: {month_name(start)} · Data through: {month_name(end)} (set by {set_by}) · "
+        f"{len(lines)} months"
+    )
     if "US home prices" in weights:
         st.info(CASE_SHILLER_NOTE)

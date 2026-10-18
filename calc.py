@@ -55,6 +55,29 @@ def line_up(series: dict[str, pd.DataFrame]) -> pd.DataFrame:
     return lined_up
 
 
+INDEX_NAME = "Your asset index"
+
+
+def chart_lines(lined_up: pd.DataFrame, start, weights: dict[str, int]) -> pd.DataFrame:
+    """Calculate the chart's lines, all starting at 100 in the start month.
+
+    lined_up: the table from line_up(), with CPI, the assets and, if shown,
+              Wages as columns.
+    start:    the start month; earlier months are left out.
+    weights:  each asset's weight in whole percent, for example {"Gold": 60}.
+
+    Returns "Your asset index", "CPI" and, only if lined_up has it, "Wages".
+    (The brief has three lines; Wages is optional by the user's choice.)
+    """
+    data = lined_up.loc[start:]
+    fractions = {name: weight / 100 for name, weight in weights.items()}
+    lines = pd.DataFrame({INDEX_NAME: asset_index(data[list(fractions)], fractions)})
+    for name in ["CPI", "Wages"]:
+        if name in data.columns:
+            lines[name] = rebase(data[name])
+    return lines
+
+
 def last_month_set_by(series: dict[str, pd.DataFrame]) -> list[str]:
     """Names of the series whose data ends earliest.
 
