@@ -10,7 +10,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from calc import INDEX_NAME, chart_lines, last_month_set_by, line_up
+from calc import INDEX_NAME, change_table, chart_lines, last_month_set_by, line_up, months_between
 from data import crypto, download_with_backup, fred_series, pink_sheet, sp500
 
 # Every series: friendly name -> (backup file name, download function, inputs).
@@ -60,6 +60,22 @@ CASE_SHILLER_NOTE = (
 
 def month_name(date) -> str:
     return date.strftime("%B %Y")  # for example "January 2015"
+
+
+def percent_text(value) -> str:
+    """+9,931.90%, -19.00%, or a dash when there is no value."""
+    return "—" if pd.isna(value) else f"{value:+,.2f}%"
+
+
+def duration_text(months: int) -> str:
+    """62 years and 8 months, 1 year, 5 months, 0 months."""
+    years, months = divmod(months, 12)
+    parts = []
+    if years:
+        parts.append(f"{years} year{'s' if years != 1 else ''}")
+    if months or not years:
+        parts.append(f"{months} month{'s' if months != 1 else ''}")
+    return " and ".join(parts)
 
 
 st.set_page_config(page_title="Wealth Inflation Tracker")
@@ -196,7 +212,18 @@ with main:
     set_by = ", ".join(last_month_set_by(chosen))
     st.caption(
         f"Start: {month_name(start)} · Data through: {month_name(end)} (set by {set_by}) · "
-        f"{len(lines)} months"
+        f"{len(lines)} monthly values"
+    )
+
+    # The % change table (yearly change is left empty for periods under 12 months).
+    changes = change_table(lines)
+    st.markdown(
+        f"**Change from {month_name(start)} to {month_name(end)} "
+        f"({duration_text(months_between(start, end))})**"
+    )
+    st.table(
+        changes.map(percent_text).rename_axis("Line"),
+        alt="Table of total and yearly percent change for each line on the chart.",
     )
     if "US home prices" in weights:
         st.info(CASE_SHILLER_NOTE)

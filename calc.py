@@ -78,6 +78,35 @@ def chart_lines(lined_up: pd.DataFrame, start, weights: dict[str, int]) -> pd.Da
     return lines
 
 
+def months_between(start: pd.Timestamp, end: pd.Timestamp) -> int:
+    """Calendar months from start to end: January 2024 to January 2026 is 24.
+
+    Counted from the dates, not from table rows, so a skipped month (such as
+    October 2025) does not make the period look shorter.
+    """
+    return (end.year - start.year) * 12 + (end.month - start.month)
+
+
+def change_table(lines: pd.DataFrame) -> pd.DataFrame:
+    """Total and yearly % change of each line, from its first to its last month.
+
+    Total change  = (end / start - 1) × 100
+    Yearly change = ((end / start) ^ (12 / months) - 1) × 100, the steady
+                    yearly rate giving the same total. Left empty (missing)
+                    when the period is shorter than 12 months, because
+                    turning a short period into a yearly rate exaggerates it.
+    """
+    months = months_between(lines.index[0], lines.index[-1])
+    rows = {}
+    for name in lines.columns:
+        growth = lines[name].iloc[-1] / lines[name].iloc[0]
+        rows[name] = {
+            "Total change": (growth - 1) * 100,
+            "Yearly change": (growth ** (12 / months) - 1) * 100 if months >= 12 else None,
+        }
+    return pd.DataFrame.from_dict(rows, orient="index")
+
+
 def last_month_set_by(series: dict[str, pd.DataFrame]) -> list[str]:
     """Names of the series whose data ends earliest.
 

@@ -3,7 +3,16 @@
 import pandas as pd
 import pytest
 
-from calc import INDEX_NAME, asset_index, chart_lines, last_month_set_by, line_up, monthly_average, rebase
+from calc import (
+    INDEX_NAME,
+    asset_index,
+    change_table,
+    chart_lines,
+    last_month_set_by,
+    line_up,
+    monthly_average,
+    rebase,
+)
 from data import TemporaryDownloadError, download_with_backup, pink_date, shiller_date
 
 # Two months, stored as the first day of each month.
@@ -116,6 +125,33 @@ def test_chart_lines_without_wages_before_1964():
     lines = chart_lines(lined_up, pd.Timestamp("1950-01-01"), {"A": 100})
     assert lines.columns.tolist() == [INDEX_NAME, "CPI"]
     assert lines.loc["1950-02-01"].tolist() == pytest.approx([110, 105], abs=1e-6)
+
+
+def test_change_table():
+    # January 2024 to January 2026 = 24 months (only 2 rows: months come from
+    # the dates, not the row count). 1.10 × 1.10 = 1.21, 1.05 × 1.05 = 1.1025,
+    # 0.90 × 0.90 = 0.81.
+    lines = pd.DataFrame(
+        {"A": [100, 121], "B": [100, 110.25], "C": [100, 81], "D": [100, 100]},
+        index=pd.to_datetime(["2024-01-01", "2026-01-01"]),
+    )
+    table = change_table(lines)
+    assert table["Total change"].tolist() == pytest.approx([21, 10.25, -19, 0], abs=1e-6)
+    assert table["Yearly change"].tolist() == pytest.approx([10, 5, -10, 0], abs=1e-6)
+
+
+def test_change_table_short_periods_have_no_yearly_change():
+    # January to June 2024 is 5 months: total change shown, yearly left empty.
+    five_months = pd.DataFrame({"A": [100, 120]}, index=pd.to_datetime(["2024-01-01", "2024-06-01"]))
+    table = change_table(five_months)
+    assert table.loc["A", "Total change"] == pytest.approx(20, abs=1e-6)
+    assert pd.isna(table.loc["A", "Yearly change"])
+
+    # A single month (0 months long): no change, and no yearly change.
+    one_month = pd.DataFrame({"A": [100]}, index=pd.to_datetime(["2024-01-01"]))
+    table = change_table(one_month)
+    assert table.loc["A", "Total change"] == pytest.approx(0, abs=1e-6)
+    assert pd.isna(table.loc["A", "Yearly change"])
 
 
 def test_shiller_date():
