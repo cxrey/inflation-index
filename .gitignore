@@ -14,3 +14,8 @@ wheels/
 
 # Backup copies of downloaded data
 saved_data/
+
+# Shortcuts to Streamlit's AI-assistant guidance (created by Streamlit; they
+# point into .venv, which is not uploaded)
+.agents/
+.claude/skills/
