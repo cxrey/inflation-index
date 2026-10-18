@@ -5,6 +5,8 @@ month is stored as its first day (for example 2024-03-01 for March 2024).
 The first row is always the start month.
 """
 
+import math
+
 import pandas as pd
 
 # How far the weights may be from adding up to exactly 1. Computers store
@@ -76,6 +78,24 @@ def chart_lines(lined_up: pd.DataFrame, start, weights: dict[str, int]) -> pd.Da
         if name in data.columns:
             lines[name] = rebase(data[name])
     return lines
+
+
+def power_of_ten_ticks(low: float, high: float) -> tuple[list[float], list[str]]:
+    """Axis labels at every power of 10 from below low to above high.
+
+    For example 55 to 10,031.9 gives 10, 100, 1k, 10k, 100k. Large values use
+    k (thousand), M (million), B (billion) and T (trillion).
+    """
+    suffixes = {0: "", 3: "k", 6: "M", 9: "B", 12: "T"}
+    values, labels = [], []
+    for exponent in range(math.floor(math.log10(low)), math.ceil(math.log10(high)) + 1):
+        values.append(10.0 ** exponent)
+        if exponent < 3:
+            labels.append(f"{10.0 ** exponent:g}")  # 0.1, 1, 10, 100
+        else:
+            group = min(exponent // 3 * 3, 12)
+            labels.append(f"{10 ** (exponent - group)}{suffixes[group]}")  # 1k, 10k, 100k, 1M
+    return values, labels
 
 
 def months_between(start: pd.Timestamp, end: pd.Timestamp) -> int:

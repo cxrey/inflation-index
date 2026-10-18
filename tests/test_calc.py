@@ -11,6 +11,7 @@ from calc import (
     last_month_set_by,
     line_up,
     monthly_average,
+    power_of_ten_ticks,
     rebase,
 )
 from data import TemporaryDownloadError, download_with_backup, pink_date, shiller_date
@@ -152,6 +153,16 @@ def test_change_table_short_periods_have_no_yearly_change():
     table = change_table(one_month)
     assert table.loc["A", "Total change"] == pytest.approx(0, abs=1e-6)
     assert pd.isna(table.loc["A", "Yearly change"])
+
+
+def test_power_of_ten_ticks():
+    # 55 to 10,031.9: from 10 (below 55) up to 100k (above 10,031.9).
+    values, labels = power_of_ten_ticks(55, 10031.9)
+    assert values == [10, 100, 1000, 10000, 100000]
+    assert labels == ["10", "100", "1k", "10k", "100k"]
+    # A wide range, as with Bitcoin from 2010 (no "G" for billions).
+    _, labels = power_of_ten_ticks(0.5, 2e8)
+    assert labels == ["0.1", "1", "10", "100", "1k", "10k", "100k", "1M", "10M", "100M", "1B"]
 
 
 def test_shiller_date():

@@ -10,7 +10,15 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from calc import INDEX_NAME, change_table, chart_lines, last_month_set_by, line_up, months_between
+from calc import (
+    INDEX_NAME,
+    change_table,
+    chart_lines,
+    last_month_set_by,
+    line_up,
+    months_between,
+    power_of_ten_ticks,
+)
 from data import crypto, download_with_backup, fred_series, pink_sheet, sp500
 
 # Every series: friendly name -> (backup file name, download function, inputs).
@@ -203,6 +211,9 @@ with main:
         margin={"t": 40},
     )
     figure.update_xaxes(hoverformat="%B %Y")
+    if log_scale:  # label only 1, 10, 100, 1k, 10k, ... so the axis stays readable
+        values, labels = power_of_ten_ticks(lines.min().min(), lines.max().max())
+        figure.update_yaxes(tickvals=values, ticktext=labels)
     st.plotly_chart(
         figure,
         alt=f"Line chart of {', '.join(lines.columns)}, all starting at 100 in {month_name(start)}.",
