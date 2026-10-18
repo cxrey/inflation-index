@@ -18,6 +18,7 @@ from calc import (
     set_section_total,
     split_categories,
     split_evenly,
+    summary_table,
     weights_add_up,
     worst_drop,
 )
@@ -182,3 +183,22 @@ def test_period_rates_dash_when_asset_too_new():
     assert rates["basket"][3] == pytest.approx(0.10, abs=1e-9)
     assert rates["basket"][5] is None and rates["basket"][10] is None and rates["basket"][20] is None
     assert rates["CPI"][5] is None  # same months as the basket, so CPI is "—" too
+
+
+def test_period_rates_without_a_basket():
+    # Weights not adding up to 100%: no basket, but CPI is still calculated (10% each).
+    cpi = growing_10_percent_a_year(MONTHS)
+    rates = period_rates(pd.DataFrame(index=MONTHS), cpi, {}, END)
+    assert all(rates["basket"][period] is None for period in (1, 3, 5, 10, 20))
+    assert rates["CPI"][20] == pytest.approx(0.10, abs=1e-9)
+
+
+def test_summary_table():
+    # 100, 150, 75, 121 from January to April (3 months):
+    # total +21%, worst drop -50% (75 after the high of 150), per year "—" (3 months).
+    lines = pd.DataFrame({"A": [100, 150, 75, 121]}, index=pd.date_range("2024-01-01", periods=4, freq="MS"))
+    table = summary_table(lines)
+    assert list(table.columns) == ["Total change", "Change per year", "Worst drop"]
+    assert table.loc["A", "Total change"] == pytest.approx(21, abs=1e-9)
+    assert pd.isna(table.loc["A", "Change per year"])
+    assert table.loc["A", "Worst drop"] == pytest.approx(-50, abs=1e-9)

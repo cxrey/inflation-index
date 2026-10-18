@@ -20,7 +20,6 @@ from calc import (
     your_rate_sentences,
     asset_lines,
     basket_and_total,
-    change_table,
     comparison_line,
     current_weights,
     last_month_set_by,
@@ -30,9 +29,11 @@ from calc import (
     needs_bitcoin_note,
     percent_text,
     percent_ticks,
+    period_rates,
     set_section_total,
     split_categories,
     split_evenly,
+    summary_table,
     valid_months,
     weights_add_up,
 )
@@ -138,6 +139,14 @@ ASSET_COLORS.update(zip(LUXURY_ASSETS, [
     "#fb923c", "#b45309", "#d97706", "#92400e",
 ]))
 DOMINANT_SHARE = 80  # warn when one asset is more than this % of the index
+# Always shown under the tables.
+GENERAL_NOTES = [
+    "Rates are past rates, not forecasts.",
+    "If you own the assets in your basket, you keep pace with it automatically (plus dividends, "
+    "which aren't included here). The rate matters for money held in cash, savings or anything else.",
+    "The rate only applies to the assets you put in your basket.",
+    "Based on monthly averages; daily drops were larger.",
+]
 BITCOIN_NOTE = (
     "Bitcoin prices from 2010–2012 come from very thin trading (few trades on "
     "small early exchanges), so they are less reliable than later prices."
@@ -579,25 +588,45 @@ with main:
     for note in comparison_notes:
         st.info(note)
 
-    # The % change table (yearly change is left empty for periods under 12 months).
-    changes = change_table(lines)
+    # --- Rates over different periods: each calculated fresh, ending at the end month ---
+    st.markdown(f"**Rates per year over different periods (to {month_name(end)})**")
+    cpi_values = tables["CPI"].set_index("date")["value"]
+    all_prices = line_up(basket_tables) if show_basket else pd.DataFrame()
+    periods = period_rates(all_prices, cpi_values, weights if show_basket else {}, end)
+    period_rows = {"CPI": periods["CPI"]}
+    if show_basket:
+        period_rows = {INDEX_NAME: periods["basket"], **period_rows}
+    st.table(
+        pd.DataFrame({
+            name: {
+                f"{years} year{'s' if years > 1 else ''}": percent_text(None if rate is None else rate * 100)
+                for years, rate in rates.items()
+            }
+            for name, rates in period_rows.items()
+        }).T.rename_axis("Line"),
+        alt="Table of the basket and CPI per year over the last 1, 3, 5, 10 and 20 years.",
+    )
+    st.caption("These rates ignore the start month you picked. If they differ a lot, no single rate is reliable.")
+
+    # --- Summary table: total change, change per year and worst drop since the start month ---
+    summary = summary_table(lines)
     # A line that ends before the end month is measured to its own last month.
-    changes.index = [
+    summary.index = [
         f"{name} (through {month_name(lines[name].last_valid_index())})"
         if lines[name].last_valid_index() < end else name
-        for name in changes.index
+        for name in summary.index
     ]
     st.markdown(
-        f"**Change from {month_name(start)} to {month_name(end)} "
+        f"**Summary from {month_name(start)} to {month_name(end)} "
         f"({duration_text(months_between(start, end))})**"
     )
-    formatted = pd.DataFrame({
-        "Total change": changes["Total change"].map(lambda value: percent_text(value, show_multiple=True)),
-        "Yearly change": changes["Yearly change"].map(percent_text),
-    }).rename_axis("Line")
     st.table(
-        formatted,
-        alt="Table of total and yearly percent change for each line on the chart.",
+        pd.DataFrame({
+            "Total change": summary["Total change"].map(lambda value: percent_text(value, show_multiple=True)),
+            "Change per year": summary["Change per year"].map(percent_text),
+            "Worst drop": summary["Worst drop"].map(lambda value: "0.00%" if value == 0 else percent_text(value)),
+        }).rename_axis("Line"),
+        alt="Table of total change, change per year and worst drop for each line.",
     )
 
     if show_basket:
@@ -623,3 +652,6 @@ with main:
         st.info(PLATINUM_NOTE)
     if needs_bitcoin_note(weights, start):
         st.info(BITCOIN_NOTE)
+
+    st.markdown("**Notes**")
+    st.caption("\n".join(f"- {note}" for note in GENERAL_NOTES))

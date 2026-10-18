@@ -57,45 +57,7 @@ def line_up(series: dict[str, pd.DataFrame]) -> pd.DataFrame:
     return lined_up
 
 
-INDEX_NAME = "Your asset index"
-
-
-def chart_lines(lined_up: pd.DataFrame, start, weights: dict[str, int]) -> pd.DataFrame:
-    """Calculate the chart's lines, all starting at 100 in the start month.
-
-    lined_up: the table from line_up(), with CPI, the assets and, if shown,
-              Wages as columns.
-    start:    the start month; earlier months are left out.
-    weights:  each asset's weight in whole percent, for example {"Gold": 60}.
-
-    Returns "Your asset index", "CPI" and, only if lined_up has it, "Wages".
-    (The brief has three lines; Wages is optional by the user's choice.)
-    """
-    data = lined_up.loc[start:]
-    fractions = {name: weight / 100 for name, weight in weights.items()}
-    lines = pd.DataFrame({INDEX_NAME: asset_index(data[list(fractions)], fractions)})
-    for name in ["CPI", "Wages"]:
-        if name in data.columns:
-            lines[name] = rebase(data[name])
-    return lines
-
-
-def power_of_ten_ticks(low: float, high: float) -> tuple[list[float], list[str]]:
-    """Axis labels at every power of 10 from below low to above high.
-
-    For example 55 to 10,031.9 gives 10, 100, 1k, 10k, 100k. Large values use
-    k (thousand), M (million), B (billion) and T (trillion).
-    """
-    suffixes = {0: "", 3: "k", 6: "M", 9: "B", 12: "T"}
-    values, labels = [], []
-    for exponent in range(math.floor(math.log10(low)), math.ceil(math.log10(high)) + 1):
-        values.append(10.0 ** exponent)
-        if exponent < 3:
-            labels.append(f"{10.0 ** exponent:g}")  # 0.1, 1, 10, 100
-        else:
-            group = min(exponent // 3 * 3, 12)
-            labels.append(f"{10 ** (exponent - group)}{suffixes[group]}")  # 1k, 10k, 100k, 1M
-    return values, labels
+INDEX_NAME = "Your asset index"  # the basket's line in the chart and tables
 
 
 def asset_lines(lined_up: pd.DataFrame, start, weights: dict[str, int]) -> pd.DataFrame:
@@ -215,6 +177,17 @@ def change_table(lines: pd.DataFrame) -> pd.DataFrame:
             "Yearly change": (growth ** (12 / months) - 1) * 100 if months >= 12 else None,
         }
     return pd.DataFrame.from_dict(rows, orient="index")
+
+
+def summary_table(lines: pd.DataFrame) -> pd.DataFrame:
+    """Total change, change per year and worst drop of each line, all in %.
+
+    Each line is measured from its first to its last value (see change_table).
+    Worst drop: the biggest fall from a previous high, 100, 150, 75, 120 -> -50%.
+    """
+    table = change_table(lines).rename(columns={"Yearly change": "Change per year"})
+    table["Worst drop"] = [100 * worst_drop(lines[name].dropna()) for name in table.index]
+    return table
 
 
 def percent_text(value: float, show_multiple: bool = False) -> str:
@@ -446,10 +419,13 @@ def period_rates(prices: pd.DataFrame, cpi: pd.Series, weights: dict[str, float]
     at the period's start. The start is the same month `years` earlier; if
     that month has no data for every asset and CPI (such as October 2025),
     the month before is used with its true length. None (shown as "—") when
-    an asset has no data that far back.
+    an asset has no data that far back. With no basket (weights empty, for
+    example while they don't add up to 100%), only CPI is calculated.
     """
-    available = prices.dropna().index.intersection(cpi.dropna().index)
     fractions = {name: weight / 100 for name, weight in weights.items()}
+    available = cpi.dropna().index
+    if fractions:
+        available = prices.dropna().index.intersection(available)
     rates = {"basket": {}, "CPI": {}}
     for period in years:
         target = end - pd.DateOffset(years=period)
@@ -459,8 +435,11 @@ def period_rates(prices: pd.DataFrame, cpi: pd.Series, weights: dict[str, float]
             continue
         start = candidates.max()
         months = months_between(start, end)
-        index = asset_index(prices.loc[[start, end], list(fractions)], fractions)
-        rates["basket"][period] = per_year(index.iloc[0], index.iloc[-1], months)
+        if fractions:
+            index = asset_index(prices.loc[[start, end], list(fractions)], fractions)
+            rates["basket"][period] = per_year(index.iloc[0], index.iloc[-1], months)
+        else:
+            rates["basket"][period] = None
         rates["CPI"][period] = per_year(cpi[start], cpi[end], months)
     return rates
 

@@ -8,14 +8,12 @@ from calc import (
     asset_index,
     asset_lines,
     change_table,
-    chart_lines,
     current_weights,
     last_month_set_by,
     line_up,
     monthly_average,
     needs_bitcoin_note,
     percent_text,
-    power_of_ten_ticks,
     rebase,
 )
 from data import TemporaryDownloadError, download_with_backup, pink_date, shiller_date
@@ -104,34 +102,6 @@ def test_last_month_set_by():
     assert last_month_set_by({"A": ends("2024-03-01"), "B": ends("2024-05-01"), "C": ends("2024-03-01")}) == ["A", "C"]
 
 
-def test_chart_lines():
-    # Jan -> Feb: index 100 -> 115 (the brief's example), CPI 200 -> 210 (105),
-    # wages 10 -> 12 (120). Starting in March: March becomes 100.
-    lined_up = pd.DataFrame(
-        {"CPI": [200, 210, 220], "Wages": [10, 12, 15], "A": [10, 12, 13], "B": [20, 22, 24]},
-        index=pd.to_datetime(["2024-01-01", "2024-02-01", "2024-03-01"]),
-    )
-    lines = chart_lines(lined_up, pd.Timestamp("2024-01-01"), {"A": 50, "B": 50})
-    assert lines.columns.tolist() == [INDEX_NAME, "CPI", "Wages"]
-    assert lines.loc["2024-02-01"].tolist() == pytest.approx([115, 105, 120], abs=1e-6)
-
-    from_march = chart_lines(lined_up, pd.Timestamp("2024-03-01"), {"A": 50, "B": 50})
-    assert len(from_march) == 1
-    assert from_march.loc["2024-03-01"].tolist() == pytest.approx([100, 100, 100], abs=1e-6)
-
-
-def test_chart_lines_without_wages_before_1964():
-    # Wages switched off, so the chart can start in 1950 (before wages begin).
-    # Index 10 -> 11 (110), CPI 24 -> 25.2 (105).
-    lined_up = pd.DataFrame(
-        {"CPI": [24, 25.2], "A": [10, 11]},
-        index=pd.to_datetime(["1950-01-01", "1950-02-01"]),
-    )
-    lines = chart_lines(lined_up, pd.Timestamp("1950-01-01"), {"A": 100})
-    assert lines.columns.tolist() == [INDEX_NAME, "CPI"]
-    assert lines.loc["1950-02-01"].tolist() == pytest.approx([110, 105], abs=1e-6)
-
-
 def test_change_table():
     # January 2024 to January 2026 = 24 months (only 2 rows: months come from
     # the dates, not the row count). 1.10 × 1.10 = 1.21, 1.05 × 1.05 = 1.1025,
@@ -157,16 +127,6 @@ def test_change_table_short_periods_have_no_yearly_change():
     table = change_table(one_month)
     assert table.loc["A", "Total change"] == pytest.approx(0, abs=1e-6)
     assert pd.isna(table.loc["A", "Yearly change"])
-
-
-def test_power_of_ten_ticks():
-    # 55 to 10,031.9: from 10 (below 55) up to 100k (above 10,031.9).
-    values, labels = power_of_ten_ticks(55, 10031.9)
-    assert values == [10, 100, 1000, 10000, 100000]
-    assert labels == ["10", "100", "1k", "10k", "100k"]
-    # A wide range, as with Bitcoin from 2010 (no "G" for billions).
-    _, labels = power_of_ten_ticks(0.5, 2e8)
-    assert labels == ["0.1", "1", "10", "100", "1k", "10k", "100k", "1M", "10M", "100M", "1B"]
 
 
 def test_percent_text():
