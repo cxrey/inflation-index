@@ -6,6 +6,7 @@ import pytest
 from calc import (
     INDEX_NAME,
     asset_index,
+    asset_lines,
     change_table,
     chart_lines,
     current_weights,
@@ -190,6 +191,15 @@ def test_current_weights():
     assert shares.sum() == pytest.approx(100, abs=1e-6)
     # A single asset is always 100%.
     assert current_weights(lined_up, MONTHS[0], {"A": 100}).tolist() == pytest.approx([100], abs=1e-6)
+
+
+def test_asset_lines():
+    # Each asset on its own, starting at 100: A 10 -> 12 is 120, B 20 -> 22 is 110.
+    lined_up = pd.DataFrame({"CPI": [200, 210], "A": [10, 12], "B": [20, 22]}, index=MONTHS)
+    lines = asset_lines(lined_up, MONTHS[0], {"A": 60, "B": 40})
+    assert lines.columns.tolist() == ["A", "B"]  # only the assets, not CPI
+    assert lines["A"].tolist() == pytest.approx([100, 120], abs=1e-6)
+    assert lines["B"].tolist() == pytest.approx([100, 110], abs=1e-6)
 
 
 def test_shiller_date():

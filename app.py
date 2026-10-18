@@ -12,6 +12,7 @@ import streamlit as st
 
 from calc import (
     INDEX_NAME,
+    asset_lines,
     change_table,
     chart_lines,
     current_weights,
@@ -62,6 +63,12 @@ ASSETS = [name for name in SERIES if name not in ("CPI", "Wages")]
 DEFAULT_WEIGHTS = {"S&P 500": 100}  # ticked when the page first opens
 # A clearly different colour for each line (readable on light and dark backgrounds).
 LINE_COLORS = {INDEX_NAME: "#3b82f6", "CPI": "#f59e0b", "Wages": "#10b981"}
+# Colours for the optional individual-asset lines (distinct from the main lines).
+ASSET_COLORS = {
+    "US home prices": "#a16207", "S&P 500": "#ef4444", "Gold": "#eab308",
+    "Silver": "#94a3b8", "Bitcoin": "#d946ef", "Ethereum": "#8b5cf6",
+    "Zcash": "#84cc16", "Monero": "#ec4899", "Solana": "#06b6d4",
+}
 DOMINANT_SHARE = 80  # warn when one asset is more than this % of the index
 CASE_SHILLER_NOTE = (
     "US home prices (Case-Shiller) are a three-month moving average: each "
@@ -162,6 +169,7 @@ if total == 100:
     st.sidebar.caption("Total: 100%")
 else:
     st.sidebar.error(f"Weights add up to {total}%. They must add up to 100%.")
+show_assets = st.sidebar.checkbox("Show individual assets", value=False, key="show_assets")
 
 st.sidebar.header("Compare with")
 st.sidebar.caption("CPI is always shown.")
@@ -203,11 +211,18 @@ with main:
     lines = chart_lines(lined_up, start, weights)
     log_scale = st.toggle("Logarithmic scale", value=True, key="log_scale")
 
+    # The chart may also show each asset on its own; the % change table does not.
+    chart = pd.concat([lines, asset_lines(lined_up, start, weights)], axis=1) if show_assets else lines
+
     figure = go.Figure()
-    for name in lines.columns:
+    for name in chart.columns:
+        if name in LINE_COLORS:  # the main lines: index, CPI, wages
+            style = {"color": LINE_COLORS[name]}
+        else:  # individual assets: thinner and dotted, so the main lines stand out
+            style = {"color": ASSET_COLORS[name], "width": 1.5, "dash": "dot"}
         figure.add_trace(go.Scatter(
-            x=lines.index, y=lines[name], name=name, mode="lines",
-            line={"color": LINE_COLORS[name]},
+            x=chart.index, y=chart[name], name=name, mode="lines",
+            line=style,
             hovertemplate="%{y:,.1f}",
         ))
     figure.add_hline(y=100, line_dash="dot", line_width=1, line_color="gray")  # the start level
@@ -220,11 +235,11 @@ with main:
     )
     figure.update_xaxes(hoverformat="%B %Y")
     if log_scale:  # label only 1, 10, 100, 1k, 10k, ... so the axis stays readable
-        values, labels = power_of_ten_ticks(lines.min().min(), lines.max().max())
+        values, labels = power_of_ten_ticks(chart.min().min(), chart.max().max())
         figure.update_yaxes(tickvals=values, ticktext=labels)
     st.plotly_chart(
         figure,
-        alt=f"Line chart of {', '.join(lines.columns)}, all starting at 100 in {month_name(start)}.",
+        alt=f"Line chart of {', '.join(chart.columns)}, all starting at 100 in {month_name(start)}.",
     )
 
     end = lines.index[-1]

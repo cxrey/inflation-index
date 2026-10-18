@@ -98,6 +98,15 @@ def power_of_ten_ticks(low: float, high: float) -> tuple[list[float], list[str]]
     return values, labels
 
 
+def asset_lines(lined_up: pd.DataFrame, start, weights: dict[str, int]) -> pd.DataFrame:
+    """One line per selected asset, each starting at 100 in the start month.
+
+    Used for the optional "Show individual assets" lines on the chart.
+    """
+    data = lined_up.loc[start:]
+    return pd.DataFrame({name: rebase(data[name]) for name in weights})
+
+
 def current_weights(lined_up: pd.DataFrame, start, weights: dict[str, int]) -> pd.Series:
     """Each asset's share of the index in the last month, in percent.
 
