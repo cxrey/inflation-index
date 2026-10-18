@@ -12,6 +12,24 @@ import pandas as pd
 TOLERANCE = 1e-6
 
 
+def monthly_average(daily: pd.DataFrame) -> pd.DataFrame:
+    """Turn daily prices (columns date, value) into monthly averages.
+
+    Only complete months are kept: a month missing even one day is left out,
+    because an average of a few days is not comparable to a full month.
+    """
+    daily = daily.drop_duplicates("date")  # so a repeated day can't count twice
+    month = daily["date"].dt.to_period("M")
+    grouped = daily.groupby(month)["value"]
+    table = pd.DataFrame({"value": grouped.mean(), "days": grouped.count()})
+    days_in_month = table.index.days_in_month
+    table = table[table["days"] == days_in_month]
+    return pd.DataFrame({
+        "date": table.index.to_timestamp(),  # first day of each month
+        "value": table["value"].to_numpy(),
+    })
+
+
 def rebase(values: pd.Series) -> pd.Series:
     """Rescale a series so it starts at 100: 100 × value_t / value_0.
 

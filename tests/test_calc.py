@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from calc import asset_index, rebase
+from calc import asset_index, monthly_average, rebase
 from data import TemporaryDownloadError, download_with_backup, pink_date, shiller_date
 
 # Two months, stored as the first day of each month.
@@ -29,6 +29,18 @@ def test_weights_not_adding_to_one_are_refused():
     prices = pd.DataFrame({"A": [10, 12], "B": [20, 22]}, index=MONTHS)
     with pytest.raises(ValueError, match="add up to 1"):
         asset_index(prices, {"A": 0.6, "B": 0.6})
+
+
+def test_monthly_average():
+    # January 2024: price = day number 1..31 -> average (1 + 31) / 2 = 16
+    # February 2024: 100 every day for all 29 days (leap year) -> 100
+    # March 2024: only March 1-10 -> incomplete, left out
+    january = pd.DataFrame({"date": pd.date_range("2024-01-01", "2024-01-31"), "value": range(1, 32)})
+    february = pd.DataFrame({"date": pd.date_range("2024-02-01", "2024-02-29"), "value": 100})
+    march = pd.DataFrame({"date": pd.date_range("2024-03-01", "2024-03-10"), "value": 50})
+    monthly = monthly_average(pd.concat([january, february, march]))
+    assert monthly["date"].tolist() == [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-02-01")]
+    assert monthly["value"].tolist() == pytest.approx([16, 100], abs=1e-6)
 
 
 def test_shiller_date():

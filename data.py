@@ -19,7 +19,10 @@ from urllib.parse import urljoin
 import pandas as pd
 import requests
 
+from calc import monthly_average
+
 FRED_URL = "https://api.stlouisfed.org/fred/series/observations"
+COINMETRICS_URL = "https://community-api.coinmetrics.io/v4/timeseries/asset-metrics"
 SHILLER_PAGE = "https://shillerdata.com/"
 PINK_SHEET_PAGE = "https://www.worldbank.org/en/research/commodity-markets"
 # First month used for each Pink Sheet column (earlier prices were not set by
@@ -184,6 +187,35 @@ def pink_sheet(column: str) -> pd.DataFrame:
     return table.reset_index(drop=True)
 
 
+def crypto(asset: str) -> pd.DataFrame:
+    """Download daily prices for one coin (for example "btc") from Coin Metrics
+    and turn them into monthly averages (complete months only)."""
+    params = {
+        "assets": asset,
+        "metrics": "PriceUSD",
+        "frequency": "1d",
+        "page_size": 10000,  # the most days Coin Metrics sends per reply
+        "paging_from": "start",
+    }
+    rows = []
+    url = COINMETRICS_URL
+    # Longer histories come in several replies; each reply links to the next.
+    while url:
+        body = fetch(url, FILE_TIMEOUT, "Coin Metrics", params).json()
+        rows += body["data"]
+        url = body.get("next_page_url")
+        params = None  # the next-page link already contains all the settings
+
+    daily = pd.DataFrame(rows)
+    if "PriceUSD" not in daily.columns:
+        raise ValueError(f"Coin Metrics sent no PriceUSD data for '{asset}'.")
+    daily = pd.DataFrame({
+        "date": pd.to_datetime(daily["time"]).dt.tz_localize(None).dt.normalize(),
+        "value": pd.to_numeric(daily["PriceUSD"], errors="coerce"),
+    })
+    return monthly_average(daily.dropna())
+
+
 if __name__ == "__main__":
     # This part runs only when you type "uv run python data.py".
     # It prints the first and last 3 months of each series so you can
@@ -208,3 +240,5 @@ if __name__ == "__main__":
     show("SP500", sp500)
     show("GOLD", pink_sheet, "Gold")
     show("SILVER", pink_sheet, "Silver")
+    for coin in ["btc", "eth", "zec", "xmr", "sol"]:
+        show(coin.upper(), crypto, coin)
