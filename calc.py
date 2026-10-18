@@ -499,3 +499,138 @@ def asset_index(prices: pd.DataFrame, weights: dict[str, float]) -> pd.Series:
     # Multiply each asset's column by its weight, add across assets, scale to 100.
     index = 100 * (relative * pd.Series(weights)).sum(axis=1)
     return index.rename("asset_index")
+
+
+# --- Market size (for the "Weight by market size" button) ---
+# Market values are in US dollars. A table has columns date, value; a year-end
+# value is dated December of that year, a FRED quarter by its first month.
+
+OUNCES_PER_TONNE = 32_150.7466  # troy ounces in one metric ton
+DOLLARS_PER_MILLION = 1_000_000  # FRED's market values are in millions of dollars
+
+# Why an asset gets 0% from the market-size button.
+NO_DATA_REASON = "no market-size data for this date."
+SILVER_PLATINUM_REASON = "no reliable estimate of how much exists above ground."
+
+
+def value_at(table: pd.DataFrame, month) -> float | None:
+    """The table's value in `month`, or None if it has none."""
+    values = table.set_index("date")["value"]
+    return float(values[month]) if month in values.index else None
+
+
+def latest_at_or_before(table: pd.DataFrame, month) -> tuple[pd.Timestamp, float] | None:
+    """The table's latest (date, value) at or before `month`, or None."""
+    earlier = table[table["date"] <= month]
+    if earlier.empty:
+        return None
+    row = earlier.loc[earlier["date"].idxmax()]
+    return row["date"], float(row["value"])
+
+
+def move_to_start(value: float, price_at_start: float, price_then: float) -> float:
+    """Move a market value from its own date to the start month by the asset's
+    price change: 100 with the price 10% higher at the start month -> 110."""
+    return value * price_at_start / price_then
+
+
+def stock_market_value(start, year_end_values: pd.DataFrame, sp500: pd.DataFrame) -> float | None:
+    """US stocks: the latest year-end value (World Bank, dated December) at or
+    before the start month, moved to it by the S&P 500's price change.
+    None before December 1975, the first year-end."""
+    latest = latest_at_or_before(year_end_values, start)
+    if latest is None:
+        return None
+    month, value = latest
+    price_at_start, price_then = value_at(sp500, start), value_at(sp500, month)
+    if price_at_start is None or price_then is None:
+        return None
+    return move_to_start(value, price_at_start, price_then)
+
+
+def home_market_value(start, quarterly_millions: pd.DataFrame, home_prices: pd.DataFrame) -> float | None:
+    """US homes: the latest quarter-end value at or before the start month (FRED,
+    in millions; a quarter dated by its first month ends two months later),
+    moved to the start month by the home price index's change."""
+    quarter_ends = quarterly_millions.assign(date=quarterly_millions["date"] + pd.DateOffset(months=2))
+    latest = latest_at_or_before(quarter_ends, start)
+    if latest is None:
+        return None
+    month, millions = latest
+    price_at_start, price_then = value_at(home_prices, start), value_at(home_prices, month)
+    if price_at_start is None or price_then is None:
+        return None
+    return move_to_start(millions * DOLLARS_PER_MILLION, price_at_start, price_then)
+
+
+def crypto_market_value(start, monthly_caps: pd.DataFrame) -> float | None:
+    """A coin: its average market cap in the start month (None if there is none)."""
+    return value_at(monthly_caps, start)
+
+
+def gold_stock_table(production: dict[int, float], anchor_tonnes: float, anchor_date,
+                     first_price_month) -> dict[int, float]:
+    """The world's above-ground gold stock at each year-end, in tonnes.
+
+    Let Y be the latest year of mine production. For year-ends from Y up to the
+    anchor date: anchor - production in Y × (months from that year-end to the
+    anchor) / 12. Before Y: end of the previous year = end of this year minus
+    this year's production, back to the year-end before the first price month.
+    Example: anchor 222,600 t at 30 June 2026, Y = 2025 with 3,600 t:
+    end-2025 = 222,600 - 3,600 × 6/12 = 220,800 t.
+    """
+    latest_year = max(production)
+    stocks = {}
+    for year in range(latest_year, anchor_date.year):
+        months = (anchor_date.year - year) * 12 + (anchor_date.month - 12)
+        stocks[year] = anchor_tonnes - production[latest_year] * months / 12
+    for year in range(latest_year, first_price_month.year - 1, -1):
+        stocks[year - 1] = stocks[year] - production[year]
+    return dict(sorted(stocks.items()))
+
+
+def investment_gold(stock_tonnes: float, investment_tonnes: float, anchor_tonnes: float) -> float:
+    """Investment gold (bars and coins, ETFs, central banks) in a year's stock,
+    using today's share for every year: 222,600 t -> 90,800 t."""
+    return stock_tonnes * investment_tonnes / anchor_tonnes
+
+
+def gold_market_value(start, investment_by_year_end: dict[int, float], gold_prices: pd.DataFrame) -> float | None:
+    """Gold: investment tonnes at the latest year-end at or before the start month
+    (a year-end counts as December) × ounces per tonne × the start month's price."""
+    years = [year for year in investment_by_year_end if pd.Timestamp(year=year, month=12, day=1) <= start]
+    price = value_at(gold_prices, start)
+    if not years or price is None:
+        return None
+    return investment_by_year_end[max(years)] * OUNCES_PER_TONNE * price
+
+
+def market_size_weights(checked: list[str], market_values: dict[str, float | None]) -> tuple[dict[str, float], dict[str, str]]:
+    """Weights (in %) proportional to each checked asset's market value, and the
+    reason for every asset set to 0%.
+
+    market_values: the market value in dollars of each asset that has a market
+    size at all (stocks, homes, gold, crypto); None means no data for this date.
+    """
+    reasons = {}
+    for asset in checked:
+        if asset == "Nasdaq":
+            reasons[asset] = (
+                "already included in the S&P 500 row, which stands for the whole US stock market."
+                if "S&P 500" in checked else
+                "no separate market-size data; check S&P 500 to include US stocks."
+            )
+        elif asset.startswith("Luxury homes"):
+            reasons[asset] = (
+                "already included in US home prices."
+                if "US home prices" in checked else
+                "no market-size data for individual cities; check US home prices to include US homes."
+            )
+        elif asset in ("Silver", "Platinum"):
+            reasons[asset] = SILVER_PLATINUM_REASON
+        elif market_values.get(asset) is None:
+            reasons[asset] = NO_DATA_REASON
+    sized = {asset: market_values[asset] for asset in checked if asset not in reasons}
+    total = sum(sized.values())
+    weights = {asset: (100 * sized[asset] / total if asset in sized else 0.0) for asset in checked}
+    return weights, reasons
