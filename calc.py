@@ -164,6 +164,27 @@ def comparison_line(name: str, table: pd.DataFrame, start, end) -> tuple[pd.Seri
     return 100 * values.reindex(months) / values[start], None
 
 
+def percent_ticks(low: float, high: float) -> tuple[list[float], list[str]]:
+    """Log-axis labels as % change, for lines drawn as levels where 100 = the start.
+
+    A level of 10 is -90%, 100 is 0%, 1,000 is +900%. Labels go at every power
+    of 10 from below `low` to above `high`; when the chart spans 3 powers of
+    ten or fewer, -50% (level 50) and +100% (level 200) are added too.
+    Example: 60 to 1,000 -> -90%, -50%, 0%, +100%, +900%.
+    """
+    first, last = math.floor(math.log10(low)), math.ceil(math.log10(high))
+    levels = [10.0 ** exponent for exponent in range(first, last + 1)]
+    if last - first <= 3:
+        levels = sorted(levels + [50.0, 200.0])
+    labels = []
+    for level in levels:
+        change = level - 100
+        # Below a level of 1, more decimals are needed: 0.1 -> -99.9%, 0.01 -> -99.99%.
+        decimals = max(0, -math.floor(math.log10(level)))
+        labels.append("0%" if change == 0 else f"{change:+,.{decimals}f}%")
+    return levels, labels
+
+
 def months_between(start: pd.Timestamp, end: pd.Timestamp) -> int:
     """Calendar months from start to end: January 2024 to January 2026 is 24.
 

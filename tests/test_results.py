@@ -7,6 +7,7 @@ from calc import (
     cpi_sentence,
     keep_up_sentence,
     per_year,
+    percent_ticks,
     your_rate_sentences,
 )
 
@@ -69,3 +70,14 @@ def test_under_12_months_hides_the_sentences():
 def test_cpi_sentence():
     assert cpi_sentence(0.0316) == "Official inflation (CPI): 3.16% per year."
     assert cpi_sentence(-0.02) == "Official inflation (CPI): -2.00% per year."
+
+
+def test_percent_axis_labels():
+    # Narrow chart (60 to 1,000 as levels, under 3 powers of ten): -50% and +100% are added.
+    levels, labels = percent_ticks(60, 1000)
+    assert levels == [10, 50, 100, 200, 1000]
+    assert labels == ["-90%", "-50%", "0%", "+100%", "+900%"]
+    # Wide chart (Bitcoin-like, 0.5 to 2 million): only powers of ten, more decimals below -99%.
+    levels, labels = percent_ticks(0.5, 2_000_000)
+    assert labels == ["-99.9%", "-99%", "-90%", "0%", "+900%", "+9,900%", "+99,900%",
+                      "+999,900%", "+9,999,900%"]

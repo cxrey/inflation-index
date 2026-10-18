@@ -29,7 +29,7 @@ from calc import (
     months_between,
     needs_bitcoin_note,
     percent_text,
-    power_of_ten_ticks,
+    percent_ticks,
     set_section_total,
     split_categories,
     split_evenly,
@@ -64,6 +64,8 @@ SERIES = {
     "Solana": ("SOL", crypto, ["sol"]),
 }
 M2 = "Money supply (M2)"
+CASH_GOODS = "Cash (in consumer goods)"  # how much less cash buys at the store
+CASH_BASKET = "Cash (in your basket)"  # how much less of your basket cash buys
 SERIES[M2] = ("M2SL", fred_series, ["M2SL"])
 # Luxury homes: one series per city; only the selected city is downloaded.
 LUXURY = "Luxury homes"
@@ -118,7 +120,11 @@ FIRST_LOAD = {
     "log_scale": True,
 }
 # A clearly different colour for each line (readable on light and dark backgrounds).
-LINE_COLORS = {INDEX_NAME: "#3b82f6", "CPI": "#f59e0b", "Wages": "#10b981", M2: "#a855f7"}
+LINE_COLORS = {
+    INDEX_NAME: "#3b82f6", "CPI": "#f59e0b", "Wages": "#10b981", M2: "#a855f7",
+    # The cash lines are dashed, in the colour of what cash is measured against.
+    CASH_GOODS: "#f59e0b", CASH_BASKET: "#3b82f6",
+}
 # Colours for the optional individual-asset lines (distinct from the main lines).
 ASSET_COLORS = {
     "US home prices": "#a16207", "S&P 500": "#ef4444",
@@ -512,35 +518,60 @@ with main:
             for sentence in your_rate_sentences(your_rate / 100, basket_rate, cpi_rate):
                 st.markdown(sentence)
 
-    # The chart may also show each asset on its own; the % change table does not.
-    chart = lines.join(asset_lines(prices, start, weights)) if show_basket and show_assets else lines
+    # --- The chart: % change since the start month ---
+    # The lines are kept as levels (100 = the start month). The chart adds the
+    # two cash lines: how much less cash buys, 100 × start / now (as a level).
+    chart = lines.copy()
+    chart[CASH_GOODS] = 100 * 100 / lines["CPI"]  # always shown; breaks where CPI does
+    if show_basket:
+        chart[CASH_BASKET] = 100 * 100 / lines[INDEX_NAME]
+        if show_assets:  # each asset on its own (the tables don't include these)
+            chart = chart.join(asset_lines(prices, start, weights))
 
     figure = go.Figure()
     for name in chart.columns:
-        if name in LINE_COLORS:  # the main lines: index, CPI, wages, money supply
+        if name in (CASH_GOODS, CASH_BASKET):  # dashed, in the colour of what cash is measured against
+            style = {"color": LINE_COLORS[name], "dash": "dash"}
+        elif name in LINE_COLORS:  # the main lines: index, CPI, wages, money supply
             style = {"color": LINE_COLORS[name]}
         else:  # individual assets: thinner and dotted, so the main lines stand out
             style = {"color": ASSET_COLORS[name], "width": 1.5, "dash": "dot"}
+        change = chart[name] - 100  # % change since the start month
         figure.add_trace(go.Scatter(
-            x=chart.index, y=chart[name], name=name, mode="lines",
+            x=chart.index,
+            # A log axis can't show 0% or negative numbers, so it draws the level
+            # (100 = start) and its labels say the % change instead.
+            y=chart[name] if log_scale else change,
+            customdata=change,
+            name=name,
+            mode="lines",
             line=style,
-            hovertemplate="%{y:,.1f}",
+            hovertemplate="%{customdata:+,.1f}%",  # hovering shows each line's % change
         ))
-    figure.add_hline(y=100, line_dash="dot", line_width=1, line_color="gray")  # the start level
+    figure.add_hline(y=100 if log_scale else 0, line_dash="dot", line_width=1, line_color="gray")
+    # The line's label is placed on its own: on a log axis, Plotly reads a
+    # label's height as a power of ten, so the start level 100 is written as 2.
+    # It sits at the right end, where the lines have usually moved away from 0%.
+    figure.add_annotation(
+        x=end, y=2 if log_scale else 0, text=f"Start: {month_name(start)} = 0%",
+        showarrow=False, xanchor="right", yanchor="bottom", font={"color": "gray"},
+    )
     figure.update_layout(
         hovermode="x unified",  # hovering shows every line for that month
-        yaxis_title="Index (start month = 100)",
+        yaxis_title="% change since the start month",
         yaxis_type="log" if log_scale else "linear",
         legend={"orientation": "h", "y": 1.1},
         margin={"t": 40},
     )
     figure.update_xaxes(hoverformat="%B %Y")
-    if log_scale:  # label only 1, 10, 100, 1k, 10k, ... so the axis stays readable
-        values, labels = power_of_ten_ticks(chart.min().min(), chart.max().max())
+    if log_scale:  # % labels at powers of ten: -90%, 0%, +900%, ...
+        values, labels = percent_ticks(chart.min().min(), chart.max().max())
         figure.update_yaxes(tickvals=values, ticktext=labels)
+    else:
+        figure.update_yaxes(tickformat="+,.0f", ticksuffix="%")
     st.plotly_chart(
         figure,
-        alt=f"Line chart of {', '.join(chart.columns)}, all starting at 100 in {month_name(start)}.",
+        alt=f"Line chart of the % change of {', '.join(chart.columns)} since {month_name(start)}.",
     )
 
     set_by = ", ".join(last_month_set_by({**basket_tables, "CPI": tables["CPI"]}))
