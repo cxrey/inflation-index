@@ -14,12 +14,17 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urljoin
 
 import pandas as pd
 import requests
 
 FRED_URL = "https://api.stlouisfed.org/fred/series/observations"
 SHILLER_PAGE = "https://shillerdata.com/"
+PINK_SHEET_PAGE = "https://www.worldbank.org/en/research/commodity-markets"
+# First month used for each Pink Sheet column (earlier prices were not set by
+# a free market: gold was fixed, silver was held down by the US Treasury).
+PINK_SHEET_STARTS = {"Gold": "1971-01-01", "Silver": "1968-01-01"}
 
 # Time limits in seconds.
 PAGE_TIMEOUT = 10  # web pages
@@ -91,6 +96,20 @@ def download_with_backup(name, download, *inputs, folder=SAVED_DATA, wait_second
     return saved, note
 
 
+def find_link(page_url: str, file_name: str, source: str) -> str:
+    """Find the current download link for file_name on a web page.
+
+    Download links often contain a version number that changes when the file
+    is updated, so the link is looked up on the page each time.
+    """
+    page = fetch(page_url, PAGE_TIMEOUT, source)
+    match = re.search(r'href="([^"]*' + re.escape(file_name) + r'[^"]*)"', page.text)
+    if match is None:
+        raise ValueError(f"Could not find the {file_name} link on {page_url}. The website may have changed.")
+    # urljoin turns a short link like "//host/file" or "/file" into a full address.
+    return urljoin(page_url, html.unescape(match.group(1)))
+
+
 def fred_series(series_id: str, api_key: str) -> pd.DataFrame:
     """Download one monthly series from FRED, for example "CPIAUCNS"."""
     params = {"series_id": series_id, "api_key": api_key, "file_type": "json"}
@@ -116,16 +135,7 @@ def shiller_date(number: float) -> pd.Timestamp:
 
 def sp500() -> pd.DataFrame:
     """Download the S&P Composite price ("P" column) from Shiller's spreadsheet."""
-    # The download link contains a version number that changes when the file
-    # is updated, so find the current link on the web page each time.
-    page = fetch(SHILLER_PAGE, PAGE_TIMEOUT, "shillerdata.com")
-    match = re.search(r'href="([^"]*ie_data\.xls[^"]*)"', page.text)
-    if match is None:
-        raise ValueError(f"Could not find the ie_data.xls link on {SHILLER_PAGE}. The website may have changed.")
-    link = html.unescape(match.group(1))
-    if link.startswith("//"):
-        link = "https:" + link
-
+    link = find_link(SHILLER_PAGE, "ie_data.xls", "shillerdata.com")
     file = fetch(link, FILE_TIMEOUT, "Shiller's spreadsheet")
     # Row 8 of the "Data" sheet holds the column names ("Date", "P", ...).
     sheet = pd.read_excel(io.BytesIO(file.content), sheet_name="Data", header=7, engine="xlrd")
@@ -143,6 +153,34 @@ def sp500() -> pd.DataFrame:
     # Remove the current month: its price is not a full monthly average yet.
     this_month = pd.Timestamp.today().to_period("M").to_timestamp()
     table = table[table["date"] < this_month]
+    return table.reset_index(drop=True)
+
+
+def pink_date(text: str) -> pd.Timestamp:
+    """Convert a Pink Sheet month like "1960M01" to 1960-01-01."""
+    year, month = text.split("M")
+    return pd.Timestamp(year=int(year), month=int(month), day=1)
+
+
+def pink_sheet(column: str) -> pd.DataFrame:
+    """Download one column ("Gold" or "Silver") from the World Bank Pink Sheet."""
+    link = find_link(PINK_SHEET_PAGE, "CMO-Historical-Data-Monthly.xlsx", "worldbank.org")
+    file = fetch(link, FILE_TIMEOUT, "the Pink Sheet file")
+    # Row 5 of the "Monthly Prices" sheet holds the column names ("Gold", ...).
+    sheet = pd.read_excel(io.BytesIO(file.content), sheet_name="Monthly Prices", header=4, engine="openpyxl")
+    if column not in sheet.columns:
+        raise ValueError(f"The Pink Sheet has no '{column}' column. Its layout may have changed.")
+
+    months = sheet.iloc[:, 0].astype(str)
+    # Keep only rows whose first cell is a month like "1960M01" (this drops
+    # the units row and any notes).
+    is_month = months.str.fullmatch(r"\d{4}M\d{2}")
+    table = pd.DataFrame({
+        "date": months[is_month].map(pink_date),
+        "value": pd.to_numeric(sheet.loc[is_month, column], errors="coerce"),
+    })
+    table = table.dropna()
+    table = table[table["date"] >= pd.Timestamp(PINK_SHEET_STARTS[column])]
     return table.reset_index(drop=True)
 
 
@@ -168,3 +206,5 @@ if __name__ == "__main__":
     show("AHETPI", fred_series, "AHETPI", key)
     show("CSUSHPINSA", fred_series, "CSUSHPINSA", key)
     show("SP500", sp500)
+    show("GOLD", pink_sheet, "Gold")
+    show("SILVER", pink_sheet, "Silver")

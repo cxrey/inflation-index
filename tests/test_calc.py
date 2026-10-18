@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from calc import asset_index, rebase
-from data import TemporaryDownloadError, download_with_backup, shiller_date
+from data import TemporaryDownloadError, download_with_backup, pink_date, shiller_date
 
 # Two months, stored as the first day of each month.
 MONTHS = pd.to_datetime(["2024-01-01", "2024-02-01"])
@@ -36,6 +36,12 @@ def test_shiller_date():
     assert shiller_date(1871.01) == pd.Timestamp("1871-01-01")
     assert shiller_date(2026.1) == pd.Timestamp("2026-10-01")
     assert shiller_date(2026.12) == pd.Timestamp("2026-12-01")
+
+
+def test_pink_date():
+    assert pink_date("1960M01") == pd.Timestamp("1960-01-01")
+    assert pink_date("1999M12") == pd.Timestamp("1999-12-01")
+    assert pink_date("2026M09") == pd.Timestamp("2026-09-01")
 
 
 # --- Retries and backup copies (no internet: pretend downloads) ---
