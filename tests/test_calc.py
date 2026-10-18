@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from calc import asset_index, monthly_average, rebase
+from calc import asset_index, line_up, monthly_average, rebase
 from data import TemporaryDownloadError, download_with_backup, pink_date, shiller_date
 
 # Two months, stored as the first day of each month.
@@ -41,6 +41,45 @@ def test_monthly_average():
     monthly = monthly_average(pd.concat([january, february, march]))
     assert monthly["date"].tolist() == [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-02-01")]
     assert monthly["value"].tolist() == pytest.approx([16, 100], abs=1e-6)
+
+
+def test_line_up():
+    # Only months where every series has a value are kept:
+    # Jan (no asset), Mar (no CPI) and Jun (no CPI) are dropped.
+    def table(months, values):
+        return pd.DataFrame({"date": pd.to_datetime([f"2024-{m}-01" for m in months]), "value": values})
+
+    cpi = table(["01", "02", "04", "05"], [100, 101, 103, 104])
+    wages = table(["01", "02", "03", "04", "05", "06"], [10, 11, 12, 13, 14, 15])
+    asset = table(["02", "03", "04", "05", "06"], [50, 55, 60, 65, 70])
+    lined_up = line_up({"CPI": cpi, "Wages": wages, "Asset": asset})
+    assert lined_up.index.tolist() == pd.to_datetime(["2024-02-01", "2024-04-01", "2024-05-01"]).tolist()
+    assert lined_up.columns.tolist() == ["CPI", "Wages", "Asset"]
+    assert lined_up.loc["2024-02-01"].tolist() == [101, 11, 50]
+
+
+def test_line_up_matches_by_month_not_exact_date():
+    # B is dated at month-end; it must still line up with A.
+    a = pd.DataFrame({"date": pd.to_datetime(["2024-01-01", "2024-02-01"]), "value": [1, 2]})
+    b = pd.DataFrame({"date": pd.to_datetime(["2024-01-31", "2024-02-29"]), "value": [10, 20]})
+    lined_up = line_up({"A": a, "B": b})
+    assert lined_up.index.tolist() == pd.to_datetime(["2024-01-01", "2024-02-01"]).tolist()
+    assert lined_up["A"].tolist() == [1, 2]
+    assert lined_up["B"].tolist() == [10, 20]
+
+
+def test_line_up_no_shared_months_gives_empty_table():
+    a = pd.DataFrame({"date": pd.to_datetime(["2024-01-01", "2024-02-01"]), "value": [1, 2]})
+    b = pd.DataFrame({"date": pd.to_datetime(["2024-03-01", "2024-04-01"]), "value": [3, 4]})
+    lined_up = line_up({"A": a, "B": b})
+    assert lined_up.empty
+    assert lined_up.columns.tolist() == ["A", "B"]
+
+
+def test_line_up_refuses_two_values_in_one_month():
+    a = pd.DataFrame({"date": pd.to_datetime(["2024-01-01", "2024-01-31"]), "value": [1, 2]})
+    with pytest.raises(ValueError, match="more than one value"):
+        line_up({"A": a})
 
 
 def test_shiller_date():

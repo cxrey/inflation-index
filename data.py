@@ -6,6 +6,23 @@ Every download function returns a table (pandas DataFrame) with two columns:
 
 download_with_backup() wraps any of them: it retries temporary failures,
 saves each successful download, and falls back to the saved copy.
+
+What one monthly value is, for each series:
+    Assets (all are monthly averages of daily prices, except home prices):
+    S&P 500 (Shiller "P")   average of the month's daily closing prices
+    Gold (Pink Sheet)       average of daily rates (stated in the file)
+    Silver (Pink Sheet)     London afternoon fixing; the World Bank does not
+                            say "average" for silver, but its monthly prices
+                            are generally averages of daily quotes
+    Crypto (Coin Metrics)   our own average of daily PriceUSD values,
+                            complete months only (see calc.monthly_average)
+    Home prices (CSUSHPINSA) NOT an average of daily prices: Case-Shiller is
+                            a three-month moving average of repeat home sales
+                            (the "July" value covers May, June and July)
+    Comparison lines:
+    CPI (CPIAUCNS)          prices collected throughout the month
+    Wages (AHETPI)          average hourly earnings for the pay period that
+                            includes the 12th of the month
 """
 
 import html
@@ -114,7 +131,10 @@ def find_link(page_url: str, file_name: str, source: str) -> str:
 
 
 def fred_series(series_id: str, api_key: str) -> pd.DataFrame:
-    """Download one monthly series from FRED, for example "CPIAUCNS"."""
+    """Download one monthly series from FRED, for example "CPIAUCNS".
+
+    See the top of this file for what one monthly value is for each series.
+    """
     params = {"series_id": series_id, "api_key": api_key, "file_type": "json"}
     observations = fetch(FRED_URL, FILE_TIMEOUT, "FRED", params).json()["observations"]
     table = pd.DataFrame(observations)[["date", "value"]]
@@ -137,7 +157,10 @@ def shiller_date(number: float) -> pd.Timestamp:
 
 
 def sp500() -> pd.DataFrame:
-    """Download the S&P Composite price ("P" column) from Shiller's spreadsheet."""
+    """Download the S&P Composite price ("P" column) from Shiller's spreadsheet.
+
+    Each value is the average of that month's daily closing prices.
+    """
     link = find_link(SHILLER_PAGE, "ie_data.xls", "shillerdata.com")
     file = fetch(link, FILE_TIMEOUT, "Shiller's spreadsheet")
     # Row 8 of the "Data" sheet holds the column names ("Date", "P", ...).
@@ -166,7 +189,11 @@ def pink_date(text: str) -> pd.Timestamp:
 
 
 def pink_sheet(column: str) -> pd.DataFrame:
-    """Download one column ("Gold" or "Silver") from the World Bank Pink Sheet."""
+    """Download one column ("Gold" or "Silver") from the World Bank Pink Sheet.
+
+    Gold is an average of daily rates; silver is the London afternoon fixing,
+    generally averaged by month (the World Bank does not state it for silver).
+    """
     link = find_link(PINK_SHEET_PAGE, "CMO-Historical-Data-Monthly.xlsx", "worldbank.org")
     file = fetch(link, FILE_TIMEOUT, "the Pink Sheet file")
     # Row 5 of the "Monthly Prices" sheet holds the column names ("Gold", ...).
@@ -189,7 +216,10 @@ def pink_sheet(column: str) -> pd.DataFrame:
 
 def crypto(asset: str) -> pd.DataFrame:
     """Download daily prices for one coin (for example "btc") from Coin Metrics
-    and turn them into monthly averages (complete months only)."""
+    and turn them into monthly averages (complete months only).
+
+    Each value is the average of every daily price in that month.
+    """
     params = {
         "assets": asset,
         "metrics": "PriceUSD",

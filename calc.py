@@ -30,6 +30,31 @@ def monthly_average(daily: pd.DataFrame) -> pd.DataFrame:
     })
 
 
+def line_up(series: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Combine several monthly tables (columns date, value) into one table.
+
+    series: a name for each table, for example {"CPI": ..., "Bitcoin": ...}.
+    Returns one row per month and one column per name, keeping only months
+    where every table has a value. This one rule sets the first month, the
+    last month, and skips gaps in the middle (such as October 2025 CPI).
+
+    Dates are matched by year and month only, so 2024-01-31 and 2024-01-01
+    both count as January 2024 (every series holds one value per month).
+    If no month is shared, the returned table is empty.
+    """
+    columns = {}
+    for name, table in series.items():
+        values = table.set_index(table["date"].dt.to_period("M"))["value"]
+        repeated = values.index[values.index.duplicated()]
+        if len(repeated) > 0:
+            raise ValueError(f"{name} has more than one value for {repeated[0]}.")
+        columns[name] = values
+    lined_up = pd.concat(columns, axis=1, sort=True).dropna()
+    lined_up.index = lined_up.index.to_timestamp()  # back to the first day of each month
+    lined_up.index.name = "date"
+    return lined_up
+
+
 def rebase(values: pd.Series) -> pd.Series:
     """Rescale a series so it starts at 100: 100 × value_t / value_0.
 
