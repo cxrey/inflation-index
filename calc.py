@@ -238,21 +238,71 @@ def worst_drop(values: pd.Series) -> float:
     return (values / values.cummax() - 1).min()
 
 
-def make_100(weights: dict[str, float]) -> dict[str, float]:
-    """Scale weights to total 100%, keeping their proportions.
+def basket_and_total(checked: dict[str, float]) -> tuple[dict[str, float], float]:
+    """From the checked assets' weights (in %), the basket and the total.
 
-    50/30/10 (total 90) -> 500/9, 100/3, 100/9. If the total is 0, nothing
-    can be scaled, so the weights are returned unchanged.
+    The basket is only the assets above 0%; the total adds all checked
+    weights. 50/50/0 -> basket of 2, total 100. Weights must total 100%
+    (see weights_add_up) for basket results to be shown.
+    """
+    basket = {name: weight for name, weight in checked.items() if weight > 0}
+    return basket, sum(checked.values())
+
+
+def weights_add_up(total: float) -> bool:
+    """True when the weights total 100% (allowing for tiny rounding, like 3 × 100/3)."""
+    return abs(total - 100) < TOLERANCE * 100
+
+
+def make_100(weights: dict[str, float], target: float = 100) -> dict[str, float]:
+    """Scale weights to add up to `target` % (100 unless given), keeping their proportions.
+
+    50/30/10 (total 90) -> 500/9, 100/3, 100/9. A section made into 20%:
+    10/30 -> 5/15. If the weights add up to 0, nothing can be scaled, so they
+    are returned unchanged.
     """
     total = sum(weights.values())
     if total == 0:
         return dict(weights)
-    return {name: weight * 100 / total for name, weight in weights.items()}
+    return {name: weight * target / total for name, weight in weights.items()}
 
 
-def split_evenly(names: list[str]) -> dict[str, float]:
-    """Give every name an equal share of 100%: 3 assets -> 100/3 each."""
-    return {name: 100 / len(names) for name in names} if names else {}
+def split_evenly(names: list[str], target: float = 100) -> dict[str, float]:
+    """Give every name an equal share of `target` % (100 unless given).
+
+    3 assets -> 100/3 each; a section of 4 assets split to 40% -> 10 each.
+    """
+    return {name: target / len(names) for name in names} if names else {}
+
+
+def set_section_total(weights: dict[str, float], target: float) -> dict[str, float]:
+    """New weights for a section so they add up to `target` %.
+
+    The assets keep their proportions (10/30 set to 20 -> 5/15); if they are
+    all at 0%, they share the target equally (0/0 set to 40 -> 20/20).
+    """
+    if sum(weights.values()) == 0:
+        return split_evenly(list(weights), target)
+    return make_100(weights, target)
+
+
+def split_categories(categories: dict[str, dict[str, float]]) -> dict[str, float]:
+    """Give every category that has a checked asset an equal share of 100%.
+
+    categories: each category's checked assets and their current weights,
+    for example {"Equities": {"S&P 500": 100}, "Commodities": {"Gold": 0}}.
+    Categories with nothing checked are left out. Inside a category, the
+    assets keep their current proportions; if they are all at 0%, they
+    split the category's share equally. The example gives S&P 500 50, Gold 50.
+    """
+    used = [assets for assets in categories.values() if assets]
+    if not used:
+        return {}
+    share = 100 / len(used)
+    result = {}
+    for assets in used:
+        result.update(set_section_total(assets, share))
+    return result
 
 
 def period_rates(prices: pd.DataFrame, cpi: pd.Series, weights: dict[str, float], end,

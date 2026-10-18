@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from calc import (
+    basket_and_total,
     cash_line,
     cash_loss_per_year,
     change_since_start,
@@ -14,7 +15,10 @@ from calc import (
     per_year,
     period_rates,
     rate_versus,
+    set_section_total,
+    split_categories,
     split_evenly,
+    weights_add_up,
     worst_drop,
 )
 
@@ -72,6 +76,69 @@ def test_make_100():
 def test_split_evenly():
     assert list(split_evenly(["A", "B", "C"]).values()) == pytest.approx([100 / 3] * 3, abs=1e-9)
     assert split_evenly([]) == {}
+
+
+def test_section_buttons():
+    # Real estate set to 40%, split among US home prices and 3 cities: 10% each.
+    split = split_evenly(["US home prices", "New York", "Boston", "Washington DC"], 40)
+    assert list(split.values()) == pytest.approx([10, 10, 10, 10], abs=1e-9)
+    # A section made into 20%, keeping proportions: 10 / 30 -> 5 / 15.
+    assert list(make_100({"A": 10, "B": 30}, 20).values()) == pytest.approx([5, 15], abs=1e-9)
+    # No section total typed: split the section's current total (2 + 3 + 7 = 12) evenly.
+    current = {"A": 2, "B": 3, "C": 7}
+    assert list(split_evenly(list(current), sum(current.values())).values()) == pytest.approx([4, 4, 4], abs=1e-9)
+
+
+def test_set_section_total():
+    # Typing a section total keeps the proportions: 10/30 set to 20 -> 5/15.
+    assert set_section_total({"A": 10, "B": 30}, 20) == pytest.approx({"A": 5, "B": 15}, abs=1e-9)
+    # Typing the total it already has changes nothing: 10/30 set to 40 -> 10/30.
+    assert set_section_total({"A": 10, "B": 30}, 40) == pytest.approx({"A": 10, "B": 30}, abs=1e-9)
+    # All at 0%: they share the new total equally, 0/0 set to 40 -> 20/20.
+    assert set_section_total({"A": 0, "B": 0}, 40) == pytest.approx({"A": 20, "B": 20}, abs=1e-9)
+
+
+def test_split_categories():
+    # Two categories: S&P 500 (Equities) and Gold at 0% (Commodities) -> 50 / 50.
+    # Empty categories (nothing checked) are left out.
+    result = split_categories({"Equities": {"S&P 500": 100}, "Commodities": {"Gold": 0}, "Crypto": {}})
+    assert result == pytest.approx({"S&P 500": 50, "Gold": 50}, abs=1e-9)
+    # Three categories with one asset each -> 100/3 each (33.33%).
+    result = split_categories({"A": {"a": 10}, "B": {"b": 20}, "C": {"c": 0}})
+    assert list(result.values()) == pytest.approx([100 / 3] * 3, abs=1e-9)
+    # Real estate keeps its proportions (10 : 5 : 5) inside its 50% share: 25 / 12.5 / 12.5.
+    result = split_categories({
+        "Equities": {"S&P 500": 80},
+        "Real estate": {"US home prices": 10, "New York": 5, "Boston": 5},
+    })
+    assert result == pytest.approx(
+        {"S&P 500": 50, "US home prices": 25, "New York": 12.5, "Boston": 12.5}, abs=1e-9
+    )
+    # Nothing checked anywhere: nothing to split.
+    assert split_categories({"Equities": {}}) == {}
+
+
+def test_checking_and_unchecking_assets():
+    # 50/50, then check a new asset: it joins at 0%, total still 100%.
+    basket, total = basket_and_total({"A": 50, "B": 50, "C": 0})
+    assert basket == {"A": 50, "B": 50}  # C at 0% is not in the basket
+    assert total == 100 and weights_add_up(total)
+    # Uncheck B: A 50% and C 0%, total 50%, so no basket results.
+    basket, total = basket_and_total({"A": 50, "C": 0})
+    assert total == 50 and not weights_add_up(total)
+    # Split evenly gives 3 × 100/3, which counts as 100%.
+    assert weights_add_up(sum(split_evenly(["A", "B", "C"]).values()))
+
+
+def test_luxury_cities_are_separate_assets():
+    # Two cities at 50% each are two assets in the basket; a third city at 0% is not in it.
+    basket, total = basket_and_total({
+        "Luxury homes (New York)": 50,
+        "Luxury homes (Boston)": 50,
+        "Luxury homes (Chicago)": 0,
+    })
+    assert basket == {"Luxury homes (New York)": 50, "Luxury homes (Boston)": 50}
+    assert weights_add_up(total)
 
 
 # --- Rates over different periods ---

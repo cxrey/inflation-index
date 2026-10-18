@@ -171,6 +171,11 @@ def fred_series(series_id: str, api_key: str, monthly_average: bool = False) -> 
     return table.dropna().reset_index(drop=True)
 
 
+def fred_monthly_average(series_id: str, api_key: str) -> pd.DataFrame:
+    """A daily FRED series (such as NASDAQCOM) as monthly averages."""
+    return fred_series(series_id, api_key, monthly_average=True)
+
+
 def shiller_date(number: float) -> pd.Timestamp:
     """Convert Shiller's decimal date to the first day of that month.
 
