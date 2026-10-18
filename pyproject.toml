@@ -4,4 +4,14 @@ version = "0.1.0"
 description = "Compare a custom asset index with consumer prices (CPI) and wages."
 readme = "README.md"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "pandas>=3.0.6",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
