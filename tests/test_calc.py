@@ -1,9 +1,10 @@
-"""Tests for calc.py, using small numbers you can check by hand."""
+"""Tests for calc.py (and data.py helpers), using small numbers you can check by hand."""
 
 import pandas as pd
 import pytest
 
 from calc import asset_index, rebase
+from data import shiller_date
 
 # Two months, stored as the first day of each month.
 MONTHS = pd.to_datetime(["2024-01-01", "2024-02-01"])
@@ -28,3 +29,10 @@ def test_weights_not_adding_to_one_are_refused():
     prices = pd.DataFrame({"A": [10, 12], "B": [20, 22]}, index=MONTHS)
     with pytest.raises(ValueError, match="add up to 1"):
         asset_index(prices, {"A": 0.6, "B": 0.6})
+
+
+def test_shiller_date():
+    # Shiller writes October as 2026.1 (not 2026.10); it must become October.
+    assert shiller_date(1871.01) == pd.Timestamp("1871-01-01")
+    assert shiller_date(2026.1) == pd.Timestamp("2026-10-01")
+    assert shiller_date(2026.12) == pd.Timestamp("2026-12-01")
