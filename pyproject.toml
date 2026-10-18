@@ -1,6 +1,6 @@
 [project]
 name = "inflation-index"
-version = "0.1.0"
+version = "1.1.0"
 description = "Compare a custom asset index with consumer prices (CPI) and wages."
 readme = "README.md"
 requires-python = ">=3.14"
