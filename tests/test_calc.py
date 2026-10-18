@@ -13,6 +13,7 @@ from calc import (
     last_month_set_by,
     line_up,
     monthly_average,
+    needs_bitcoin_note,
     percent_text,
     power_of_ten_ticks,
     rebase,
@@ -200,6 +201,13 @@ def test_asset_lines():
     assert lines.columns.tolist() == ["A", "B"]  # only the assets, not CPI
     assert lines["A"].tolist() == pytest.approx([100, 120], abs=1e-6)
     assert lines["B"].tolist() == pytest.approx([100, 110], abs=1e-6)
+
+
+def test_needs_bitcoin_note():
+    # Shown only when Bitcoin is selected AND the start is before January 2013.
+    assert needs_bitcoin_note({"Bitcoin": 100}, pd.Timestamp("2012-12-01")) is True
+    assert needs_bitcoin_note({"Bitcoin": 100}, pd.Timestamp("2013-01-01")) is False
+    assert needs_bitcoin_note({"Gold": 100}, pd.Timestamp("2010-08-01")) is False
 
 
 def test_shiller_date():

@@ -19,6 +19,7 @@ from calc import (
     last_month_set_by,
     line_up,
     months_between,
+    needs_bitcoin_note,
     percent_text,
     power_of_ten_ticks,
 )
@@ -70,6 +71,10 @@ ASSET_COLORS = {
     "Zcash": "#84cc16", "Monero": "#ec4899", "Solana": "#06b6d4",
 }
 DOMINANT_SHARE = 80  # warn when one asset is more than this % of the index
+BITCOIN_NOTE = (
+    "Bitcoin prices from 2010–2012 come from very thin trading (few trades on "
+    "small early exchanges), so they are less reliable than later prices."
+)
 CASE_SHILLER_NOTE = (
     "US home prices (Case-Shiller) are a three-month moving average: each "
     "month's value covers that month and the two before it."
@@ -279,3 +284,5 @@ with main:
                 )
     if "US home prices" in weights:
         st.info(CASE_SHILLER_NOTE)
+    if needs_bitcoin_note(weights, start):
+        st.info(BITCOIN_NOTE)

@@ -123,6 +123,18 @@ def current_weights(lined_up: pd.DataFrame, start, weights: dict[str, int]) -> p
     return 100 * held / held.sum()
 
 
+BITCOIN_RELIABLE_FROM = pd.Timestamp("2013-01-01")
+
+
+def needs_bitcoin_note(weights: dict[str, int], start) -> bool:
+    """True when Bitcoin is selected and the chart starts before 2013.
+
+    Bitcoin prices from 2010-2012 come from very thin trading, so the page
+    shows a note about them.
+    """
+    return "Bitcoin" in weights and start < BITCOIN_RELIABLE_FROM
+
+
 def months_between(start: pd.Timestamp, end: pd.Timestamp) -> int:
     """Calendar months from start to end: January 2024 to January 2026 is 24.
 
