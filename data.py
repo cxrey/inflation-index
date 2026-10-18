@@ -16,13 +16,20 @@ What one monthly value is, for each series:
                             are generally averages of daily quotes
     Crypto (Coin Metrics)   our own average of daily PriceUSD values,
                             complete months only (see calc.monthly_average)
+    Nasdaq (NASDAQCOM)      average of the month's daily closes, calculated
+                            by FRED (complete months only)
+    Platinum (Pink Sheet)   average of daily rates, like gold
     Home prices (CSUSHPINSA) NOT an average of daily prices: Case-Shiller is
                             a three-month moving average of repeat home sales
                             (the "July" value covers May, June and July)
+    Luxury homes (..XRHTNSA) same method as home prices, for the "high tier"
+                            (the most expensive third of homes sold) of one city
     Comparison lines:
     CPI (CPIAUCNS)          prices collected throughout the month
     Wages (AHETPI)          average hourly earnings for the pay period that
                             includes the 12th of the month
+    Money supply (M2SL)     the amount of M2 money in the month (seasonally
+                            adjusted); a comparison line only
 """
 
 import html
@@ -44,7 +51,19 @@ SHILLER_PAGE = "https://shillerdata.com/"
 PINK_SHEET_PAGE = "https://www.worldbank.org/en/research/commodity-markets"
 # First month used for each Pink Sheet column (earlier prices were not set by
 # a free market: gold was fixed, silver was held down by the US Treasury).
-PINK_SHEET_STARTS = {"Gold": "1971-01-01", "Silver": "1968-01-01"}
+PINK_SHEET_STARTS = {"Gold": "1971-01-01", "Silver": "1968-01-01", "Platinum": "1960-01-01"}
+# Luxury homes: Case-Shiller high-tier index for each city, in menu order.
+LUXURY_CITIES = {
+    "San Francisco": "SFXRHTNSA",
+    "Los Angeles": "LXXRHTNSA",
+    "San Diego": "SDXRHTNSA",
+    "New York": "NYXRHTNSA",
+    "Seattle": "SEXRHTNSA",
+    "Boston": "BOXRHTNSA",
+    "Washington DC": "WDXRHTNSA",
+    "Miami": "MIXRHTNSA",
+    "Chicago": "CHXRHTNSA",
+}
 
 # Time limits in seconds.
 PAGE_TIMEOUT = 10  # web pages
@@ -133,12 +152,17 @@ def find_link(page_url: str, file_name: str, source: str) -> str:
     return urljoin(page_url, html.unescape(match.group(1)))
 
 
-def fred_series(series_id: str, api_key: str) -> pd.DataFrame:
+def fred_series(series_id: str, api_key: str, monthly_average: bool = False) -> pd.DataFrame:
     """Download one monthly series from FRED, for example "CPIAUCNS".
 
+    monthly_average: for daily series (such as NASDAQCOM), ask FRED for the
+    average of each month. FRED leaves incomplete months empty; they are
+    dropped like any other empty month.
     See the top of this file for what one monthly value is for each series.
     """
     params = {"series_id": series_id, "api_key": api_key, "file_type": "json"}
+    if monthly_average:
+        params.update({"frequency": "m", "aggregation_method": "avg"})
     observations = fetch(FRED_URL, FILE_TIMEOUT, "FRED", params).json()["observations"]
     table = pd.DataFrame(observations)[["date", "value"]]
     table["date"] = pd.to_datetime(table["date"])
@@ -273,5 +297,13 @@ if __name__ == "__main__":
     show("SP500", sp500)
     show("GOLD", pink_sheet, "Gold")
     show("SILVER", pink_sheet, "Silver")
+    show("PLATINUM", pink_sheet, "Platinum")
+    show("NASDAQCOM", fred_series, "NASDAQCOM", key, True)
+    show("M2SL", fred_series, "M2SL", key)
+    for city, series_id in LUXURY_CITIES.items():
+        table, note = download_with_backup(f"LUX_{series_id}", fred_series, series_id, key)
+        first, last = table.iloc[0], table.iloc[-1]
+        print(f"Luxury homes, {city} ({series_id}): {len(table)} months, "
+              f"{first.date:%Y-%m} {first.value} to {last.date:%Y-%m} {last.value}" + (f"  NOTE: {note}" if note else ""))
     for coin in ["btc", "eth", "zec", "xmr", "sol"]:
         show(coin.upper(), crypto, coin)
