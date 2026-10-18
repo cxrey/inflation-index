@@ -98,6 +98,22 @@ def power_of_ten_ticks(low: float, high: float) -> tuple[list[float], list[str]]
     return values, labels
 
 
+def current_weights(lined_up: pd.DataFrame, start, weights: dict[str, int]) -> pd.Series:
+    """Each asset's share of the index in the last month, in percent.
+
+    The index buys and holds, so an asset that rises faster becomes a bigger
+    share: share_i = w_i × (p_i,now / p_i,start), divided by the same summed
+    over all assets. Example: A and B at 50% each, A up 20% and B up 10%:
+    A = 0.6 / 1.15 = 52.17%, B = 0.55 / 1.15 = 47.83%.
+    """
+    data = lined_up.loc[start:]
+    held = pd.Series({
+        name: weight / 100 * data[name].iloc[-1] / data[name].iloc[0]
+        for name, weight in weights.items()
+    })
+    return 100 * held / held.sum()
+
+
 def months_between(start: pd.Timestamp, end: pd.Timestamp) -> int:
     """Calendar months from start to end: January 2024 to January 2026 is 24.
 

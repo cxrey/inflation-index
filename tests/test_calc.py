@@ -8,6 +8,7 @@ from calc import (
     asset_index,
     change_table,
     chart_lines,
+    current_weights,
     last_month_set_by,
     line_up,
     monthly_average,
@@ -178,6 +179,17 @@ def test_percent_text():
     assert percent_text(1234.4) == "+1,234%"
     # No value: a dash.
     assert percent_text(float("nan")) == "—"
+
+
+def test_current_weights():
+    # The brief's example: A and B at 50% each, A up 20%, B up 10%.
+    # A = 0.6 / 1.15 = 52.17%, B = 0.55 / 1.15 = 47.83%.
+    lined_up = pd.DataFrame({"A": [10, 12], "B": [20, 22]}, index=MONTHS)
+    shares = current_weights(lined_up, MONTHS[0], {"A": 50, "B": 50})
+    assert shares.tolist() == pytest.approx([52.1739, 47.8261], abs=1e-4)
+    assert shares.sum() == pytest.approx(100, abs=1e-6)
+    # A single asset is always 100%.
+    assert current_weights(lined_up, MONTHS[0], {"A": 100}).tolist() == pytest.approx([100], abs=1e-6)
 
 
 def test_shiller_date():

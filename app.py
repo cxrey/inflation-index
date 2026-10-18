@@ -14,6 +14,7 @@ from calc import (
     INDEX_NAME,
     change_table,
     chart_lines,
+    current_weights,
     last_month_set_by,
     line_up,
     months_between,
@@ -61,6 +62,7 @@ ASSETS = [name for name in SERIES if name not in ("CPI", "Wages")]
 DEFAULT_WEIGHTS = {"S&P 500": 100}  # ticked when the page first opens
 # A clearly different colour for each line (readable on light and dark backgrounds).
 LINE_COLORS = {INDEX_NAME: "#3b82f6", "CPI": "#f59e0b", "Wages": "#10b981"}
+DOMINANT_SHARE = 80  # warn when one asset is more than this % of the index
 CASE_SHILLER_NOTE = (
     "US home prices (Case-Shiller) are a three-month moving average: each "
     "month's value covers that month and the two before it."
@@ -70,6 +72,15 @@ CASE_SHILLER_NOTE = (
 def month_name(date) -> str:
     return date.strftime("%B %Y")  # for example "January 2015"
 
+
+
+def share_text(share: float) -> str:
+    """52.2%, or <0.1% / >99.9% for shares that would round to 0.0% / 100.0%."""
+    if 0 < share < 0.05:
+        return "<0.1%"
+    if 99.95 < share < 100:
+        return ">99.9%"
+    return f"{share:.1f}%"
 
 
 def duration_text(months: int) -> str:
@@ -237,5 +248,19 @@ with main:
         formatted,
         alt="Table of total and yearly percent change for each line on the chart.",
     )
+
+    # Current weights: faster-rising assets become a bigger share over time.
+    shares = current_weights(lined_up, start, weights)
+    st.caption(
+        f"Current weights ({month_name(end)}): "
+        + " · ".join(f"{name} {share_text(share)}" for name, share in shares.items())
+    )
+    if len(shares) >= 2:  # with one asset it is always 100%, so no warning
+        for name, share in shares.items():
+            if share > DOMINANT_SHARE:
+                st.warning(
+                    f"{name} now makes up {share_text(share)} of your index, "
+                    f"so the index mostly follows {name}."
+                )
     if "US home prices" in weights:
         st.info(CASE_SHILLER_NOTE)
