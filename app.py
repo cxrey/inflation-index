@@ -13,6 +13,11 @@ import streamlit as st
 from calc import (
     INDEX_NAME,
     asset_index,
+    basket_sentences,
+    cpi_sentence,
+    keep_up_sentence,
+    per_year,
+    your_rate_sentences,
     asset_lines,
     basket_and_total,
     change_table,
@@ -109,6 +114,7 @@ FIRST_LOAD = {
     "show_assets": False,
     "show_wages": True,
     "show_m2": False,
+    "your_rate": None,  # the "Your rate" box starts empty
     "log_scale": True,
 }
 # A clearly different colour for each line (readable on light and dark backgrounds).
@@ -422,6 +428,9 @@ show_wages = st.sidebar.checkbox("Wages", key="show_wages")
 show_m2 = st.sidebar.checkbox(M2, key="show_m2")
 
 with main:
+    # The main results go above the chart; this area is filled further down,
+    # once the start and end months are known.
+    results_area = st.container()
     # Drawn before anything that can stop the page: Streamlit forgets a
     # switch's setting whenever a run ends without drawing it.
     log_scale = st.toggle("Logarithmic scale", key="log_scale")
@@ -473,6 +482,35 @@ with main:
             comparison_notes.append(note)  # for example "Wages data starts in January 1964."
         else:
             lines[name] = line
+
+    # --- Main results: rates per year from start to end ---
+    period_months = months_between(start, end)
+    basket_rate = (
+        per_year(lines[INDEX_NAME].iloc[0], lines[INDEX_NAME].iloc[-1], period_months)
+        if show_basket else None
+    )
+    cpi_rate = per_year(lines["CPI"].iloc[0], lines["CPI"].iloc[-1], period_months)
+    with results_area:
+        for sentence in basket_sentences(basket_rate, start, end):
+            st.markdown(f"#### {sentence}")
+        if cpi := cpi_sentence(cpi_rate):
+            st.markdown(f"#### {cpi}")
+        if keep_up := keep_up_sentence(basket_rate):
+            st.markdown(keep_up)
+        if period_months < 12:
+            st.info("Rates per year need at least 12 months between the start and end month.")
+        your_rate = st.number_input(
+            "Your rate (% per year)",
+            min_value=-99.99,  # must be above -100%
+            max_value=1000.0,
+            step=0.5,
+            format="%.2f",
+            placeholder="What your money earns, for example 4 for a 4% savings account",
+            key="your_rate",
+        )
+        if your_rate is not None:
+            for sentence in your_rate_sentences(your_rate / 100, basket_rate, cpi_rate):
+                st.markdown(sentence)
 
     # The chart may also show each asset on its own; the % change table does not.
     chart = lines.join(asset_lines(prices, start, weights)) if show_basket and show_assets else lines

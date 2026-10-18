@@ -337,6 +337,86 @@ def split_categories(categories: dict[str, dict[str, float]]) -> dict[str, float
     return result
 
 
+# --- The main result sentences (rates are fractions: 0.10 = 10%) ---
+
+
+def rate_text(rate: float) -> str:
+    """A rate as a % without its sign: 0.0763 -> "7.63%", -0.10 -> "10.00%",
+    and from 1,000% without decimals: 12.345 -> "1,235%"."""
+    percent = abs(rate) * 100
+    return f"{percent:,.0f}%" if round(percent, 2) >= 1000 else f"{percent:,.2f}%"
+
+
+def is_zero(rate: float) -> bool:
+    """True when a rate would show as 0.00%, so "exactly 0" matches what is shown."""
+    return round(rate * 100, 2) == 0
+
+
+def your_rate_text(your_rate: float) -> str:
+    """The rate the user typed, as typed: 0.04 -> "4%", 0.045 -> "4.5%", -0.02 -> "-2%"."""
+    return f"{your_rate * 100:.2f}".rstrip("0").rstrip(".") + "%"
+
+
+def basket_sentences(rate: float | None, start, end) -> list[str]:
+    """The basket's main result: how fast its prices changed, and what that did to cash.
+
+    No sentences when the rate is "—" (period under 12 months). Rising:
+    "rose ... Cash lost ...". Falling: "fell ... Cash gained ...". Flat: only
+    "didn't change (0% per year)".
+    """
+    if rate is None:
+        return []
+    if is_zero(rate):
+        return ["Your basket's prices didn't change (0% per year)."]
+    cash = cash_loss_per_year(rate)
+    return [
+        f"Your basket's prices {'rose' if rate > 0 else 'fell'} {rate_text(rate)} per year "
+        f"({start:%B %Y} to {end:%B %Y}).",
+        f"Cash {'lost' if cash > 0 else 'gained'} {rate_text(cash)} of its buying power "
+        f"against your basket per year.",
+    ]
+
+
+def cpi_sentence(rate: float | None) -> str | None:
+    """'Official inflation (CPI): 3.16% per year.' (a minus sign when prices fell)."""
+    if rate is None:
+        return None
+    return f"Official inflation (CPI): {'-' if rate < 0 and not is_zero(rate) else ''}{rate_text(rate)} per year."
+
+
+def keep_up_sentence(rate: float | None) -> str | None:
+    """Shown only when the basket's prices rose."""
+    if rate is None or rate <= 0 or is_zero(rate):
+        return None
+    return f"To keep up with your basket, your money must grow at least {rate_text(rate)} per year."
+
+
+def buying_power_phrase(change: float, where: str) -> str:
+    """'lose 20.00% of your buying power <where>', 'gain ...', or 'keep the same buying power'."""
+    if is_zero(change):
+        return "keep the same buying power"
+    return f"{'lose' if change < 0 else 'gain'} {rate_text(change)} of your buying power {where}"
+
+
+def your_rate_sentences(your_rate: float, basket_rate: float | None, cpi_rate: float | None) -> list[str]:
+    """What the user's own rate (for example 4% in savings) means against the basket and CPI.
+
+    A sentence is left out when the rate it depends on is "—".
+    """
+    sentences = []
+    shown = your_rate_text(your_rate)
+    if basket_rate is not None:
+        phrase = buying_power_phrase(rate_versus(your_rate, basket_rate), "in your basket")
+        sentences.append(
+            f"If basket prices keep changing at their past rate, at {shown} per year "
+            f"you'd {phrase} each year."
+        )
+    if cpi_rate is not None:
+        phrase = buying_power_phrase(rate_versus(your_rate, cpi_rate), "at the store")
+        sentences.append(f"Against CPI, at {shown} per year you'd {phrase} each year.")
+    return sentences
+
+
 def period_rates(prices: pd.DataFrame, cpi: pd.Series, weights: dict[str, float], end,
                  years=(1, 3, 5, 10, 20)) -> dict[str, dict[int, float | None]]:
     """Basket and CPI per year over the last 1, 3, 5, 10 and 20 years to `end`.
