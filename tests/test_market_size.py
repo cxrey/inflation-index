@@ -13,6 +13,7 @@ from calc import (
     gold_stock_table,
     home_market_value,
     investment_gold,
+    market_caption,
     market_size_weights,
     move_to_start,
     stock_market_value,
@@ -166,3 +167,36 @@ def test_gold_coverage_from_first_price_month():
 def test_gold_investment_share():
     # The investment share of 222,600 t is 90,800 t.
     assert investment_gold(222_600, 90_800, 222_600) == pytest.approx(90_800, abs=1e-9)
+
+
+# --- The caption under the weights ---
+
+PRESSED = {"start": pd.Timestamp("2024-01-01"), "weights": {"S&P 500": 60.0, "Gold": 40.0}}
+
+
+def test_caption_after_pressing():
+    lines = market_caption(PRESSED, {"S&P 500": 60.0, "Gold": 40.0}, pd.Timestamp("2024-01-01"))
+    assert lines == ["Market-size weights as of January 2024."]
+
+
+def test_caption_edited_after_make_it_100_and_removed_by_reset():
+    # Pressing Make it 100% after the button marks it edited, even though the
+    # weights already added up to 100% and stay the same: "(edited)".
+    after_make_100 = {"S&P 500": 60.0, "Gold": 40.0}
+    assert market_caption({**PRESSED, "edited": True}, after_make_100, pd.Timestamp("2024-01-01")) == [
+        "Started from market-size weights (edited)."
+    ]
+    # Typing a different weight is a change too.
+    assert market_caption(PRESSED, {"S&P 500": 75.0, "Gold": 25.0}, pd.Timestamp("2024-01-01")) == [
+        "Started from market-size weights (edited)."
+    ]
+    # Checking another asset (it joins at 0%) is a change too.
+    assert market_caption(PRESSED, {"S&P 500": 60.0, "Gold": 40.0, "Silver": 0.0},
+                          pd.Timestamp("2024-01-01"))[0].endswith("(edited).")
+    # Reset clears what the button set: no caption.
+    assert market_caption(None, after_make_100, pd.Timestamp("2024-01-01")) == []
+
+
+def test_caption_when_start_month_changes():
+    lines = market_caption(PRESSED, {"S&P 500": 60.0, "Gold": 40.0}, pd.Timestamp("2020-01-01"))
+    assert lines == ["Market-size weights as of January 2024.", "Start month changed; press again to update."]

@@ -19,6 +19,7 @@ from calc import (
     split_categories,
     split_evenly,
     summary_table,
+    weight_text,
     weights_add_up,
     worst_drop,
 )
@@ -202,3 +203,12 @@ def test_summary_table():
     assert table.loc["A", "Total change"] == pytest.approx(21, abs=1e-9)
     assert pd.isna(table.loc["A", "Change per year"])
     assert table.loc["A", "Worst drop"] == pytest.approx(-50, abs=1e-9)
+
+
+def test_weight_text():
+    assert weight_text(100) == "100"
+    assert weight_text(100 / 3) == "33.33"
+    assert weight_text(0) == "0"
+    # Above 0 but rounding to 0: "<0.01", not "0" (Bitcoin by market size in August 2010).
+    assert weight_text(0.0000006264) == "<0.01"
+    assert weight_text(0.005) == "0.01"

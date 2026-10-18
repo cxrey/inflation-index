@@ -275,6 +275,16 @@ def basket_and_total(checked: dict[str, float]) -> tuple[dict[str, float], float
     return basket, sum(checked.values())
 
 
+def weight_text(weight: float) -> str:
+    """A weight for the sidebar, in %: 100, 33.33 or 99.99 (up to two decimals,
+    without trailing zeros). A weight above 0 that would round to 0 shows as
+    "<0.01", so a tiny weight (Bitcoin by market size in 2010) isn't mistaken for 0.
+    """
+    if 0 < weight < 0.005:
+        return "<0.01"
+    return f"{weight:.2f}".rstrip("0").rstrip(".")
+
+
 def weights_add_up(total: float) -> bool:
     """True when the weights total 100% (allowing for tiny rounding, like 3 × 100/3)."""
     return abs(total - 100) < TOLERANCE * 100
@@ -634,3 +644,25 @@ def market_size_weights(checked: list[str], market_values: dict[str, float | Non
     total = sum(sized.values())
     weights = {asset: (100 * sized[asset] / total if asset in sized else 0.0) for asset in checked}
     return weights, reasons
+
+
+def market_caption(state: dict | None, current_weights: dict[str, float], start) -> list[str]:
+    """The caption lines under the weights after "Weight by market size" was pressed.
+
+    state: what the button set ({"start": month, "weights": {asset: %}}), or
+    None (never pressed, or Reset). It becomes "(edited)" when a weight button
+    was pressed since (state["edited"]), or when the weights differ (typing a
+    weight, checking or unchecking an asset).
+    A different start month adds "Start month changed; press again to update."
+    """
+    if not state:
+        return []
+    set_weights = state["weights"]
+    edited = state.get("edited", False) or set(current_weights) != set(set_weights) or any(
+        abs(current_weights[asset] - weight) > TOLERANCE for asset, weight in set_weights.items()
+    )
+    lines = ["Started from market-size weights (edited)." if edited
+             else f"Market-size weights as of {state['start']:%B %Y}."]
+    if start != state["start"]:
+        lines.append("Start month changed; press again to update.")
+    return lines

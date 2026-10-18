@@ -15,16 +15,23 @@ from calc import (
     asset_index,
     basket_sentences,
     cpi_sentence,
+    gold_market_value,
+    gold_stock_table,
+    home_market_value,
+    investment_gold,
     keep_up_sentence,
     per_year,
     your_rate_sentences,
     asset_lines,
     basket_and_total,
     comparison_line,
+    crypto_market_value,
     current_weights,
     last_month_set_by,
     line_up,
     make_100,
+    market_caption,
+    market_size_weights,
     months_between,
     needs_bitcoin_note,
     percent_text,
@@ -32,19 +39,28 @@ from calc import (
     period_rates,
     set_section_total,
     split_categories,
+    stock_market_value,
     split_evenly,
     summary_table,
     valid_months,
+    weight_text,
     weights_add_up,
 )
 from data import (
+    GOLD_INVESTMENT_TONNES,
+    GOLD_STOCK_ANCHOR_DATE,
+    GOLD_STOCK_ANCHOR_TONNES,
+    GOLD_WORLD_PRODUCTION_TONNES,
     LUXURY_CITIES,
+    PINK_SHEET_STARTS,
+    crypto_market_cap,
     crypto,
     download_with_backup,
     fred_monthly_average,
     fred_series,
     pink_sheet,
     sp500,
+    world_bank_us_market_cap,
 )
 
 # Every series: friendly name -> (backup file name, download function, inputs).
@@ -74,6 +90,27 @@ SERIES.update({
     f"{LUXURY} ({city})": (f"LUX_{series_id}", fred_series, [series_id])
     for city, series_id in LUXURY_CITIES.items()
 })
+# Market-size data for the "Weight by market size" button: which series gives
+# each asset's market value. Loaded only when needed (not with the prices).
+COIN_CODES = {"Bitcoin": "btc", "Ethereum": "eth", "Zcash": "zec", "Monero": "xmr", "Solana": "sol"}
+MARKET_SERIES = {
+    "S&P 500": "US stock market value",
+    "US home prices": "US home market value",
+    **{coin: f"{coin} market cap" for coin in COIN_CODES},
+}
+SERIES.update({
+    "US stock market value": ("US_MARKET_CAP", world_bank_us_market_cap, []),
+    "US home market value": ("HNOREMQ027S", fred_series, ["HNOREMQ027S"]),
+    **{f"{coin} market cap": (f"CAP_{code.upper()}", crypto_market_cap, [code]) for coin, code in COIN_CODES.items()},
+})
+# Investment gold (tonnes) at each year-end, back to the year-end before our first gold price.
+GOLD_INVESTMENT_BY_YEAR_END = {
+    year: investment_gold(tonnes, GOLD_INVESTMENT_TONNES, GOLD_STOCK_ANCHOR_TONNES)
+    for year, tonnes in gold_stock_table(
+        GOLD_WORLD_PRODUCTION_TONNES, GOLD_STOCK_ANCHOR_TONNES, GOLD_STOCK_ANCHOR_DATE,
+        pd.Timestamp(PINK_SHEET_STARTS["Gold"]),
+    ).items()
+}
 FRED_DOWNLOADS = (fred_series, fred_monthly_average)
 
 
@@ -139,6 +176,24 @@ ASSET_COLORS.update(zip(LUXURY_ASSETS, [
     "#fb923c", "#b45309", "#d97706", "#92400e",
 ]))
 DOMINANT_SHARE = 80  # warn when one asset is more than this % of the index
+MARKET_SIZE_HELP = (
+    "Weights each asset by its total market value, the way the S&P 500 weights its "
+    "companies. US stocks are available from December 1975."
+)
+MARKET_SIZE_NOTE = [
+    "Each asset is weighted by the size of the market its price comes from. Stock and home "
+    "prices are US, so they use US market sizes; gold and crypto trade in one global market, "
+    "so they use world totals. That gives gold more weight than it has in US wealth alone.",
+    "US stocks: total value of US companies listed on US exchanges (World Bank).",
+    "US homes: owner-occupied real estate, including land, plus nonprofits' property "
+    "(Federal Reserve). Rental housing owned by landlords isn't included, so homes' weight "
+    "is somewhat low.",
+    "Gold: total from mining history (World Gold Council, USGS), investment gold only (not "
+    "jewelry). The investment share uses today's figure for all years, so earlier years are "
+    "estimates. USGS's yearly mining totals are lower than the World Gold Council's, so earlier "
+    "years' gold stock, and gold's weight for older start months, is somewhat high.",
+    "Crypto: Coin Metrics market caps (Solana's is an estimate).",
+]
 # Always shown under the tables.
 GENERAL_NOTES = [
     "Rates are past rates, not forecasts.",
@@ -178,11 +233,6 @@ def share_text(share: float) -> str:
     return f"{share:.1f}%"
 
 
-def weight_text(weight: float) -> str:
-    """100, 33.33 or 99.99: up to two decimals, without trailing zeros."""
-    return f"{weight:.2f}".rstrip("0").rstrip(".")
-
-
 def duration_text(months: int) -> str:
     """62 years and 8 months, 1 year, 5 months, 0 months."""
     years, months = divmod(months, 12)
@@ -200,13 +250,23 @@ def checked_assets() -> list[str]:
     return [asset for asset in ASSETS if st.session_state.get(f"use_{asset}")]
 
 
+def mark_market_edited():
+    """A weight button was pressed after "Weight by market size": the caption
+    becomes "(edited)" even if the numbers happen to stay the same."""
+    if "market" in st.session_state:
+        # Store an updated copy: Streamlit may not keep a change made inside the saved value.
+        st.session_state["market"] = {**st.session_state["market"], "edited": True}
+
+
 def split_evenly_clicked():
+    mark_market_edited()
     for asset, weight in split_evenly(checked_assets()).items():
         st.session_state[f"weight_{asset}"] = weight
 
 
 def split_categories_clicked():
     """Equal shares for every category with a checked asset; proportions kept inside each."""
+    mark_market_edited()
     categories = {
         group: {
             asset: st.session_state.get(f"weight_{asset}", 0.0)
@@ -222,6 +282,7 @@ def split_categories_clicked():
 
 
 def make_100_clicked():
+    mark_market_edited()
     current = {asset: st.session_state.get(f"weight_{asset}", 0.0) for asset in checked_assets()}
     if sum(current.values()) == 0:
         st.session_state["weights_message"] = "Give at least one asset a weight first."
@@ -247,6 +308,7 @@ def section_weights(section: str) -> dict[str, float]:
 
 def section_split_clicked(section: str):
     """Share the section's current total equally among its checked assets."""
+    mark_market_edited()
     current = section_weights(section)
     if not current:
         st.session_state["weights_message"] = f"Check at least one asset in {section} first."
@@ -257,6 +319,7 @@ def section_split_clicked(section: str):
 
 def section_total_changed(section: str):
     """Typing a section total rescales that section right away (proportions kept)."""
+    mark_market_edited()
     target = st.session_state[f"total_{section}"]
     current = section_weights(section)
     if target is None:  # the box was cleared: change nothing
@@ -268,9 +331,44 @@ def section_total_changed(section: str):
         st.session_state[f"weight_{asset}"] = weight
 
 
+def market_values_at(start, assets: list[str]) -> dict[str, float | None]:
+    """Each asset's market value in dollars at the start month; None = no data."""
+    values = {}
+    for asset in assets:
+        try:
+            if asset == "S&P 500":
+                values[asset] = stock_market_value(start, load(MARKET_SERIES[asset])[0], tables[asset])
+            elif asset == "US home prices":
+                values[asset] = home_market_value(start, load(MARKET_SERIES[asset])[0], tables[asset])
+            elif asset == "Gold":
+                values[asset] = gold_market_value(start, GOLD_INVESTMENT_BY_YEAR_END, tables[asset])
+            elif asset in MARKET_SERIES:  # a coin
+                values[asset] = crypto_market_value(start, load(MARKET_SERIES[asset])[0])
+        except Exception:  # could not be loaded and has no backup: no data
+            values[asset] = None
+    return values
+
+
+def market_size_clicked():
+    # Applied further down, before the weight boxes are drawn (see apply_market_size).
+    st.session_state["market_pressed"] = True
+
+
+def apply_market_size(start):
+    """Set every checked asset's weight to its share of the total market value."""
+    assets = [asset for asset in ASSETS if st.session_state.get(f"use_{asset}")]
+    weights, reasons = market_size_weights(assets, market_values_at(start, assets))
+    for asset, weight in weights.items():
+        st.session_state[f"weight_{asset}"] = weight
+    st.session_state["market"] = {"start": start, "weights": weights, "reasons": reasons}
+    # Keep this start month even if an asset set to 0% no longer limits the dates.
+    st.session_state["earliest"] = None
+
+
 def reset_clicked():
     """Back to the first-load page. Each box is set explicitly (not just
     forgotten), so the browser shows the reset values too."""
+    st.session_state.pop("market", None)  # removes the market-size caption
     for asset in ASSETS:
         st.session_state.pop(f"weight_{asset}", None)
     st.session_state.update(FIRST_LOAD)
@@ -294,7 +392,11 @@ st.caption(
     "[FRED](https://fred.stlouisfed.org/), Federal Reserve Bank of St. Louis · "
     "S&P 500 from [Robert Shiller](https://shillerdata.com/) · "
     "Gold, silver and platinum from the [World Bank Pink Sheet](https://www.worldbank.org/en/research/commodity-markets) · "
-    "Crypto data: [Coin Metrics](https://coinmetrics.io/)\n\n"
+    "Crypto data: [Coin Metrics](https://coinmetrics.io/) · "
+    "Market sizes: US stocks from the [World Bank](https://data.worldbank.org/indicator/CM.MKT.LCAP.CD) "
+    "(World Federation of Exchanges data, CC BY 4.0), US homes from FRED (Federal Reserve), "
+    "gold from the [World Gold Council](https://www.gold.org/goldhub/data/above-ground-stocks) and "
+    "[USGS](https://www.usgs.gov/centers/national-minerals-information-center/gold-statistics-and-information)\n\n"
     "This product uses the FRED® API but is not endorsed or certified by the "
     "Federal Reserve Bank of St. Louis."
 )
@@ -312,7 +414,10 @@ with main:
 
     tables = {}
     # Every series except luxury homes, plus only the luxury-homes cities that are ticked.
-    to_load = [name for name in SERIES if not name.startswith(LUXURY)]
+    to_load = [
+        name for name in SERIES
+        if not name.startswith(LUXURY) and name not in MARKET_SERIES.values()
+    ]
     to_load += [city for city in LUXURY_ASSETS if st.session_state.get(f"use_{city}")]
     for name in to_load:
         with st.spinner(f"Downloading {name}…"):
@@ -324,6 +429,11 @@ with main:
         if note:
             st.warning(note)
         tables[name] = table
+
+# "Weight by market size" was pressed: set the weights now, before the weight
+# boxes are drawn, using the start month shown when it was pressed.
+if st.session_state.pop("market_pressed", False) and st.session_state.get("start") is not None:
+    apply_market_size(st.session_state["start"])
 
 # --- Controls in the sidebar ---
 st.sidebar.header("Your assets")
@@ -425,13 +535,45 @@ if weights_ok:
     st.sidebar.caption(f"Total: {weight_text(total)}%")
 else:
     st.sidebar.error(f"Total: {weight_text(total)}%. Weights must add up to 100%.")
+# The dates: only the basket's assets above 0% and CPI decide them. Worked out
+# here already, because the market-size button depends on the start month.
+basket_tables = {name: tables[name] for name in weights}
+months = valid_months(basket_tables, tables["CPI"]) if "CPI" in tables else []
+if months:
+    earliest = months[0]
+    chosen_start = st.session_state.get("start")
+    # Move to the earliest month if the chosen month is no longer offered, or if
+    # it was the earliest month before this change (so it follows the earliest).
+    if chosen_start not in months or chosen_start == st.session_state.get("earliest"):
+        st.session_state["start"] = earliest
+    st.session_state["earliest"] = earliest
+start_month = st.session_state.get("start") if months else None
+
+# The market-size button only works if a checked asset has market-size data then.
+market_ok = start_month is not None and sum(
+    market_size_weights(list(checked), market_values_at(start_month, list(checked)))[0].values()
+) > 0
+
 with st.sidebar.container(horizontal=True):
     st.button("Split evenly", on_click=split_evenly_clicked)
     st.button("Split categories evenly", on_click=split_categories_clicked)
     st.button("Make it 100%", on_click=make_100_clicked)
+    st.button("Weight by market size", on_click=market_size_clicked, disabled=not market_ok,
+              help=MARKET_SIZE_HELP)
     st.button("Reset", on_click=reset_clicked)
 if "weights_message" in st.session_state:
     st.sidebar.info(st.session_state.pop("weights_message"))
+# After "Weight by market size": what it set, and whether it has been edited since.
+market_state = st.session_state.get("market")
+market_lines = market_caption(market_state, checked, start_month)
+for line in market_lines:
+    st.sidebar.caption(line)
+if market_lines and market_lines[0].startswith("Market-size weights as of") and market_state["reasons"]:
+    st.sidebar.caption("Set to 0%:\n" + "\n".join(
+        f"- {asset}: {reason}" for asset, reason in market_state["reasons"].items()
+    ))
+with st.sidebar.expander("How market size is measured"):
+    st.markdown("\n".join(f"- {line}" for line in MARKET_SIZE_NOTE))
 st.sidebar.caption("Weights are set at the start month and change as prices move (no rebalancing).")
 show_assets = st.sidebar.checkbox("Show individual assets", key="show_assets")
 
@@ -458,21 +600,12 @@ with main:
     elif not weights_ok:
         st.warning("Weights must add up to 100%. Results for your basket are hidden until they do.")
 
-    # The dates: only the basket's assets above 0% and CPI decide them.
-    basket_tables = {name: tables[name] for name in weights}
-    months = valid_months(basket_tables, tables["CPI"])
     if not months:
         st.error("The selected series have no months in common.")
         st.stop()
 
-# The start-month menu offers only months where the basket and CPI have data.
-earliest = months[0]
-chosen_start = st.session_state.get("start")
-# Move to the earliest month if the chosen month is no longer offered, or if
-# it was the earliest month before this change (so it follows the earliest).
-if chosen_start not in months or chosen_start == st.session_state.get("earliest"):
-    st.session_state["start"] = earliest
-st.session_state["earliest"] = earliest
+# The start-month menu offers only months where the basket and CPI have data
+# (the month itself was worked out above, before the weight buttons).
 start = st.sidebar.selectbox("Start month", months, format_func=month_name, key="start")
 
 with main:
