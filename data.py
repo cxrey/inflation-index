@@ -30,10 +30,22 @@ What one monthly value is, for each series:
                             includes the 12th of the month
     Money supply (M2SL)     the amount of M2 money in the month (seasonally
                             adjusted); a comparison line only
+    Yields (for the 10-year Treasury index and the "Your rate" shortcuts):
+    10-year Treasury (GS10) average of the month's daily yields, % per year
+    3-month bill (TB3MS)    average of the month's daily rates, discount
+                            basis, % per year
     Market size (only for the "Weight by market size" button):
     US stocks (World Bank)  value of US-listed domestic companies, year-end, $
     US homes (HNOREMQ027S)  households' and nonprofits' real estate at market
                             value, quarter-end, millions of $
+    Landlords' homes        noncorporate businesses' residential real estate
+      (NNBEMVQ027S)         at market value, quarter-end, millions of $
+    Treasury debt           market value of marketable Treasury debt (Dallas
+      (MVMTD027MNFRBDAL)    Fed), month-end, billions of $
+    Treasury bills          face value outstanding, month-end, millions of $:
+                            the Treasury's monthly statement from January 2001
+                            (treasury_bills), the Fed's quarter-end figure
+                            (BOGZ1FL313161110Q) before that
     Crypto market caps      monthly average of daily market caps, $
     Gold                    a yearly stock table built from one World Gold
                             Council figure and USGS mine production (below)
@@ -55,6 +67,7 @@ from calc import monthly_average
 FRED_URL = "https://api.stlouisfed.org/fred/series/observations"
 COINMETRICS_URL = "https://community-api.coinmetrics.io/v4/timeseries/asset-metrics"
 WORLD_BANK_URL = "https://api.worldbank.org/v2/country/USA/indicator/CM.MKT.LCAP.CD"
+FISCALDATA_URL = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/debt/mspd/mspd_table_1"
 SHILLER_PAGE = "https://shillerdata.com/"
 PINK_SHEET_PAGE = "https://www.worldbank.org/en/research/commodity-markets"
 # First month used for each Pink Sheet column (earlier prices were not set by
@@ -299,6 +312,27 @@ def crypto_market_cap(asset: str) -> pd.DataFrame:
     return crypto(asset, "CapMrktEstUSD" if asset == "sol" else "CapMrktCurUSD")
 
 
+def treasury_bills() -> pd.DataFrame:
+    """Face value of marketable Treasury bills outstanding at each month-end, in
+    millions of dollars, from the Treasury's Monthly Statement of the Public Debt
+    (FiscalData, table 1, from January 2001). Dated by the month's first day."""
+    params = {
+        "fields": "record_date,security_type_desc,security_class_desc,total_mil_amt",
+        "filter": "security_type_desc:eq:Marketable,security_class_desc:eq:Bills",
+        "sort": "record_date",
+        "page[size]": 10000,  # one row per month: every month fits in one reply
+    }
+    body = fetch(FISCALDATA_URL, FILE_TIMEOUT, "FiscalData", params).json()
+    if not body.get("data"):
+        raise ValueError("FiscalData sent no Treasury bills data.")
+    rows = pd.DataFrame(body["data"])
+    table = pd.DataFrame({
+        "date": pd.to_datetime(rows["record_date"]).dt.to_period("M").dt.to_timestamp(),
+        "value": pd.to_numeric(rows["total_mil_amt"], errors="coerce"),
+    })
+    return table.dropna().reset_index(drop=True)
+
+
 def world_bank_us_market_cap() -> pd.DataFrame:
     """Total value of US companies listed on US exchanges, in US dollars, at
     each year-end (World Bank indicator CM.MKT.LCAP.CD, from the World
@@ -382,6 +416,13 @@ if __name__ == "__main__":
     # Market size: US stocks (World Bank), US homes (FRED), crypto market caps.
     show("US_MARKET_CAP", world_bank_us_market_cap)
     show("HNOREMQ027S", fred_series, "HNOREMQ027S", key)
+    show("NNBEMVQ027S", fred_series, "NNBEMVQ027S", key)
+    # Yields and the 10-year Treasury's market size.
+    show("GS10", fred_series, "GS10", key)
+    show("TB3MS", fred_series, "TB3MS", key)
+    show("MVMTD027MNFRBDAL", fred_series, "MVMTD027MNFRBDAL", key)
+    show("TREASURY_BILLS", treasury_bills)
+    show("BOGZ1FL313161110Q", fred_series, "BOGZ1FL313161110Q", key)
     for coin in ["btc", "eth", "zec", "xmr", "sol"]:
         show(f"CAP_{coin.upper()}", crypto_market_cap, coin)
     years = sorted(GOLD_WORLD_PRODUCTION_TONNES)
