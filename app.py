@@ -13,6 +13,8 @@ import streamlit as st
 from calc import (
     INDEX_NAME,
     NO_DATA_REASON,
+    gold_counts,
+    us_government_gold_value,
     market_weights_unchanged,
     waiting_lines,
     yearly_market_index,
@@ -225,6 +227,8 @@ MARKET_SIZE_NOTE = [
     "estimates. USGS's yearly mining totals are lower than the World Gold Council's, so earlier "
     "years' gold stock, and gold's weight for older start months, is somewhat high.",
     "Crypto: Coin Metrics market caps (Solana's is an estimate).",
+    "Gold's range: one end counts the world's investment gold, the other only US government "
+    "gold (8,133.5 t). US private gold holdings aren't measured anywhere.",
 ]
 # Always shown under the tables.
 GENERAL_NOTES = [
@@ -755,6 +759,20 @@ with main:
             index = index.loc[:end]
         else:
             index = asset_index(prices, {name: weight / 100 for name, weight in weights.items()})
+    # Gold's range: with market-size weights and gold in the basket, the same
+    # basket again with gold counted as US government gold only (8,133.5 t).
+    gold_index = None
+    if show_basket and market_unchanged and gold_counts(weights, reweights):
+        def us_gold_value(asset: str, month) -> float | None:
+            if asset == "Gold":
+                return us_government_gold_value(month, tables["Gold"])
+            return market_value_of(asset, month)
+
+        if yearly:
+            gold_index, _ = yearly_market_index(yearly_prices.loc[:end], start, us_gold_value)
+        else:
+            us_gold_weights = market_size_weights(list(weights), {name: us_gold_value(name, start) for name in weights})
+            gold_index = asset_index(prices, {name: share / 100 for name, share in us_gold_weights.items()})
     if waiting and market_unchanged:  # in the sidebar, under the market-size caption
         waiting_area.caption("\n".join(f"- {line}" for line in waiting_lines(waiting, reweights, yearly)))
     lines = pd.DataFrame(index=pd.date_range(start, end, freq="MS"))
@@ -780,12 +798,16 @@ with main:
         if show_basket else None
     )
     cpi_rate = per_year(lines["CPI"].iloc[0], lines["CPI"].iloc[-1], period_months)
+    # The other end of gold's range (the chart and tables use the world figure).
+    gold_rate = None
+    if gold_index is not None and pd.notna(gold_index.get(end)):
+        gold_rate = per_year(gold_index.iloc[0], gold_index[end], period_months)
     with results_area:
-        for sentence in basket_sentences(basket_rate, start, end):
+        for sentence in basket_sentences(basket_rate, start, end, other=gold_rate):
             st.markdown(f"#### {sentence}")
         if cpi := cpi_sentence(cpi_rate):
             st.markdown(f"#### {cpi}")
-        if keep_up := keep_up_sentence(basket_rate):
+        if keep_up := keep_up_sentence(basket_rate, other=gold_rate):
             st.markdown(keep_up)
         if period_months < 12:
             st.info("Rates per year need at least 12 months between the start and end month.")

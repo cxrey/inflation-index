@@ -361,23 +361,47 @@ def your_rate_text(your_rate: float) -> str:
     return f"{your_rate * 100:.2f}".rstrip("0").rstrip(".") + "%"
 
 
-def basket_sentences(rate: float | None, start, end) -> list[str]:
+def signed_rate_text(rate: float) -> str:
+    """A rate as a % keeping a minus sign: -0.005 -> "-0.50%", 0.012 -> "1.20%"."""
+    return f"{'-' if rate < 0 and not is_zero(rate) else ''}{rate_text(rate)}"
+
+
+GOLD_RANGE_REASON = "depending on whether gold is counted worldwide or as US government gold only"
+
+
+def range_text(rate: float, other: float | None) -> str | None:
+    """"range A% to B%", smaller first, signs kept; None when there is no other
+    result or both show the same after rounding."""
+    if other is None:
+        return None
+    low, high = sorted([rate, other])
+    if signed_rate_text(low) == signed_rate_text(high):
+        return None
+    return f"range {signed_rate_text(low)} to {signed_rate_text(high)}"
+
+
+def basket_sentences(rate: float | None, start, end, other: float | None = None) -> list[str]:
     """The basket's main result: how fast its prices changed, and what that did to cash.
 
     No sentences when the rate is "—" (period under 12 months). Rising:
     "rose ... Cash lost ...". Falling: "fell ... Cash gained ...". Flat: only
     "didn't change (0% per year)".
+    other: the same basket with gold counted as US government gold only (for
+    market-size weights with gold); adds a range to each sentence.
     """
     if rate is None:
         return []
+    rates_range = range_text(rate, other)
+    gold_range = f"; {rates_range}, {GOLD_RANGE_REASON}" if rates_range else ""
+    period = f"{start:%B %Y} to {end:%B %Y}{gold_range}"
     if is_zero(rate):
-        return ["Your basket's prices didn't change (0% per year)."]
+        return [f"Your basket's prices didn't change (0% per year{gold_range})."]
     cash = cash_loss_per_year(rate)
+    cash_range = range_text(cash, None if other is None else cash_loss_per_year(other))
     return [
-        f"Your basket's prices {'rose' if rate > 0 else 'fell'} {rate_text(rate)} per year "
-        f"({start:%B %Y} to {end:%B %Y}).",
+        f"Your basket's prices {'rose' if rate > 0 else 'fell'} {rate_text(rate)} per year ({period}).",
         f"Cash {'lost' if cash > 0 else 'gained'} {rate_text(cash)} of its buying power "
-        f"against your basket per year.",
+        f"against your basket per year" + (f" ({cash_range})." if cash_range else "."),
     ]
 
 
@@ -388,11 +412,13 @@ def cpi_sentence(rate: float | None) -> str | None:
     return f"Official inflation (CPI): {'-' if rate < 0 and not is_zero(rate) else ''}{rate_text(rate)} per year."
 
 
-def keep_up_sentence(rate: float | None) -> str | None:
-    """Shown only when the basket's prices rose."""
+def keep_up_sentence(rate: float | None, other: float | None = None) -> str | None:
+    """Shown only when the basket's prices rose. other: see basket_sentences."""
     if rate is None or rate <= 0 or is_zero(rate):
         return None
-    return f"To keep up with your basket, your money must grow at least {rate_text(rate)} per year."
+    rates_range = range_text(rate, other)
+    return (f"To keep up with your basket, your money must grow at least {rate_text(rate)} per year"
+            + (f" ({rates_range})." if rates_range else "."))
 
 
 def buying_power_phrase(change: float, where: str) -> str:
@@ -886,3 +912,21 @@ def waiting_lines(waiting: list[str], reweights: dict, yearly: bool) -> list[str
         f"{asset}: 0% (no market-size data at the start month)."
         for asset in waiting
     ]
+
+
+# --- Version 1.3: gold's range (market-size weights with gold) ---
+
+US_GOVERNMENT_GOLD_TONNES = 8_133.5  # US Treasury's gold today, used for every year
+
+
+def us_government_gold_value(month, gold_prices: pd.DataFrame) -> float | None:
+    """Gold counted as US government gold only: 8,133.5 t × ounces per tonne ×
+    that month's gold price (None without a price)."""
+    price = value_at(gold_prices, month)
+    return None if price is None else US_GOVERNMENT_GOLD_TONNES * OUNCES_PER_TONNE * price
+
+
+def gold_counts(weights: dict[str, float], reweights: dict) -> bool:
+    """True when gold is in the basket at some point: above 0% at the start,
+    or joining in a January (reweights from yearly_market_index)."""
+    return weights.get("Gold", 0) > 0 or any("Gold" in set_weights for set_weights in reweights.values())
