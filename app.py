@@ -6,13 +6,21 @@ Streamlit re-runs this whole file from top to bottom every time someone
 clicks or types on the page, so downloads are remembered with st.cache_data.
 """
 
+from datetime import date
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 from calc import (
     INDEX_NAME,
+    NEW_YORK_PLACES,
     NO_DATA_REASON,
+    can_compare,
+    compare_states,
+    estimate_tax_rates,
+    selected_state_rate,
+    tax_rules_note,
     after_tax_rate,
     state_tax_applies,
     gold_counts,
@@ -76,6 +84,7 @@ from data import (
     treasury_bills,
     world_bank_us_market_cap,
 )
+from tax_rules import COUNTY_SOURCES, TAX_RULES, TAX_RULES_YEAR
 
 # Every series: friendly name -> (backup file name, download function, inputs).
 # FRED downloads also need the API key, which is added when downloading.
@@ -187,6 +196,14 @@ FIRST_LOAD = {
     "federal_tax": None,  # the tax boxes start empty
     "state_tax": None,
     "state_tax_applies": True,
+    # "Estimate my tax rates" (closed, empty).
+    "estimator_section": False,
+    "est_status": "Single",
+    "est_state": None,
+    "est_ny_local": "No",
+    "est_wages": None,
+    "est_gains": 0.0,
+    "compare_shown": False,
     "yearly_update": False,  # turned on by "Weight by market size"
     "log_scale": True,
 }
@@ -272,6 +289,13 @@ TAX_NOTE = (
     "taxed until you sell. Treasury interest isn't taxed by states. Leave the tax boxes empty for "
     "a Roth IRA, IRA or 401(k), or if your rate is from assets you hold. Traditional IRAs and "
     "401(k)s are taxed when you withdraw, not each year. This is a simplification, not tax advice."
+)
+FILING_STATUSES = {"Single": "single", "Married filing jointly": "married", "Head of household": "head"}
+ESTIMATOR_NOTE = (
+    "An estimate from your wages, dividends and gains, and state, using the standard deduction. "
+    "Itemized deductions, credits and other income can change your real rate. Not tax advice. "
+    "States are estimated with dividends and capital gains taxed like other income; that only "
+    "affects which bracket you land in, since interest is taxed as ordinary income everywhere."
 )
 PLATINUM_NOTE = (
     "Before the 1970s, platinum was mostly sold at prices set by producers, "
@@ -442,6 +466,67 @@ def rate_typed():
     st.session_state["state_tax_applies"] = state_tax_applies("typed")
 
 
+def fill_tax_boxes(federal: float, state: float):
+    """The estimator's "Fill in the tax boxes" button."""
+    st.session_state["federal_tax"] = round(federal, 2)
+    st.session_state["state_tax"] = round(state, 2)
+
+
+def compare_row_selected():
+    """A row picked in the "Compare all states" table fills the state box."""
+    rows = st.session_state["compare_table"]["selection"]["rows"]
+    rate = selected_state_rate(st.session_state["compare_rows"], rows)
+    if rate is not None:
+        st.session_state["state_tax"] = round(rate, 2)
+
+
+def tax_estimator(your_rate: float | None, state_applies: bool):
+    """The "Estimate my tax rates" section: marginal federal and state rates on
+    $1,000 more interest, from the 2026 tax rules, and "Compare all states"."""
+    st.caption(f"Based on {TAX_RULES_YEAR} tax rules.")
+    if note := tax_rules_note(date.today().year, TAX_RULES_YEAR):
+        st.warning(note)
+    status = FILING_STATUSES[st.selectbox("Filing status", list(FILING_STATUSES), key="est_status")]
+    state = st.selectbox("State", list(TAX_RULES["states"]), index=None, placeholder="Choose a state",
+                         key="est_state")
+    local = None
+    if state == "New York":
+        place = st.radio("New York City or Yonkers resident?", ["No", *NEW_YORK_PLACES],
+                         horizontal=True, key="est_ny_local")
+        local = None if place == "No" else place
+    wages = st.number_input("Yearly wages before deductions ($)", min_value=0.0, step=1_000.0,
+                            format="%.0f", key="est_wages")
+    st.caption("Include interest you already earn here; it's taxed like wages.")
+    gains = st.number_input("Yearly dividends and long-term capital gains ($, optional)", min_value=0.0,
+                            step=1_000.0, format="%.0f", key="est_gains") or 0.0
+    if state and can_compare(wages):
+        federal, state_rate = estimate_tax_rates(status, state, local, wages, gains, TAX_RULES)
+        city = f" (including {local} tax)" if local else ""
+        st.markdown(f"Tax on extra interest: **federal {federal:.2f}%**, **state {state_rate:.2f}%**{city}.")
+        st.button("Fill in the tax boxes", on_click=fill_tax_boxes, args=(federal, state_rate))
+    if state in TAX_RULES["county_ranges"]:
+        low, high = TAX_RULES["county_ranges"][state]
+        source, url = COUNTY_SOURCES[state]
+        st.caption(f"Plus a county income tax that also applies to interest: {low:.2f}–{high:.2f}% "
+                   f"in {state}, depending on county ([{source}]({url})).")
+    st.caption(ESTIMATOR_NOTE)
+
+    if st.button("Compare all states", disabled=not can_compare(wages)):
+        st.session_state["compare_shown"] = True
+    if st.session_state.get("compare_shown") and can_compare(wages):
+        table = compare_states(status, wages, gains, your_rate, state_applies, TAX_RULES)
+        st.session_state["compare_rows"] = table  # for the row picked
+        st.caption("Click a column heading to sort. Pick a row to put its state rate in the state box.")
+        st.dataframe(
+            table, key="compare_table", on_select=compare_row_selected, selection_mode="single-row",
+            hide_index=True,
+            column_config={name: st.column_config.NumberColumn(format="%.2f")
+                           for name in table.columns if name != "State"},
+        )
+        if your_rate is not None and not state_applies:
+            st.caption("Treasury interest: no state tax, so this column is the same in every state.")
+
+
 def market_size_clicked():
     # Applied further down, before the weight boxes are drawn (see apply_market_size).
     st.session_state["market_pressed"] = True
@@ -530,7 +615,10 @@ st.caption(
     "(via FRED), the [US Treasury](https://fiscaldata.treasury.gov/datasets/monthly-statement-public-debt/) "
     "and FRED (Federal Reserve), "
     "gold from the [World Gold Council](https://www.gold.org/goldhub/data/above-ground-stocks) and "
-    "[USGS](https://www.usgs.gov/centers/national-minerals-information-center/gold-statistics-and-information)\n\n"
+    "[USGS](https://www.usgs.gov/centers/national-minerals-information-center/gold-statistics-and-information) · "
+    "Tax rules: [IRS](https://www.irs.gov/pub/irs-drop/rp-25-32.pdf) (federal) and "
+    "[Tax Foundation](https://taxfoundation.org/data/all/state/state-income-tax-rates-2026/) "
+    "(state rates and brackets, CC BY-NC 4.0)\n\n"
     "This product uses the FREDÂ® API but is not endorsed or certified by the "
     "Federal Reserve Bank of St. Louis."
 )
@@ -874,6 +962,8 @@ with main:
             if taxed:
                 st.caption(f"After tax: {rate_used:.2f}%")
         st.caption(TAX_NOTE)
+        with st.expander("Estimate my tax rates", key="estimator_section", on_change="rerun"):
+            tax_estimator(your_rate, state_applies)
         if your_rate is not None:
             for sentence in your_rate_sentences(rate_used / 100, basket_rate, cpi_rate):
                 st.markdown(sentence)

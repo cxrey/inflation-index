@@ -964,3 +964,137 @@ def state_tax_applies(rate_set_by: str) -> bool:
     "Your rate": a Treasury shortcut button ("treasury") -> off, because states
     don't tax Treasury interest; typing a rate ("typed") -> on."""
     return rate_set_by != "treasury"
+
+
+# --- Version 1.4: estimating tax rates on interest (all money in dollars) ---
+#
+# Filing status keys: "single", "married" (married filing jointly), "head"
+# (head of household). Brackets are lists of [start of bracket, rate] on
+# taxable income, for example [[0, 0.10], [12_400, 0.12], ...].
+
+EXTRA_INTEREST = 1_000  # the marginal rate is the tax on $1,000 more interest, ÷ 1,000
+
+
+def bracket_tax(taxable: float, brackets: list[list[float]]) -> float:
+    """Tax on `taxable` income with these brackets: each rate applies to the
+    part of the income between its start and the next bracket's start.
+    Example: [[0, 0.10], [10_000, 0.20]] on $15,000 -> 1,000 + 1,000 = 2,000."""
+    tax = 0.0
+    for (start, rate), (next_start, _) in zip(brackets, [*brackets[1:], [float("inf"), 0]]):
+        if taxable > start:
+            tax += (min(taxable, next_start) - start) * rate
+    return tax
+
+
+def stacked_tax(bottom: float, top: float, brackets: list[list[float]]) -> float:
+    """Tax on the slice of taxable income from `bottom` to `top` (for dividends
+    and long-term gains, which sit on top of ordinary income)."""
+    return bracket_tax(top, brackets) - bracket_tax(bottom, brackets)
+
+
+def federal_tax(wages: float, gains: float, interest: float, status: str, rules: dict) -> float:
+    """Federal income tax plus the Net Investment Income Tax, with the
+    standard deduction. `gains`: qualified dividends and long-term capital
+    gains, taxed at 0/15/20% on top of ordinary income (the IRS's qualified
+    dividends and capital gain tax worksheet). Interest is ordinary income.
+    rules: "brackets", "standard_deduction", "gains_brackets" (each by
+    status), "niit_rate" and "niit_threshold" (by status)."""
+    income = wages + gains + interest
+    taxable = max(0.0, income - rules["standard_deduction"][status])
+    ordinary = max(0.0, taxable - gains)  # gains come last, on top
+    tax = bracket_tax(ordinary, rules["brackets"][status])
+    tax += stacked_tax(ordinary, taxable, rules["gains_brackets"][status])
+    investment_income = gains + interest
+    over_threshold = max(0.0, income - rules["niit_threshold"][status])
+    return tax + rules["niit_rate"] * min(investment_income, over_threshold)
+
+
+def state_tax(income: float, status: str, rules: dict) -> float:
+    """A state's income tax estimate: all income (wages, interest, dividends and
+    gains alike) minus the standard deduction and personal exemption, taxed by
+    the state's brackets. Head of household uses the single figures when the
+    state has none of its own. rules: "brackets", "standard_deduction" and
+    "exemption" (deductions only; a credit doesn't change the marginal rate),
+    each by status; an empty bracket list means no income tax."""
+    def by_status(table: dict):
+        return table.get(status, table.get("single")) if status == "head" else table[status]
+    brackets = by_status(rules["brackets"])
+    if not brackets:
+        return 0.0
+    taxable = income - by_status(rules.get("standard_deduction", {"single": 0})) \
+        - by_status(rules.get("exemption", {"single": 0}))
+    return bracket_tax(max(0.0, taxable), brackets)
+
+
+def marginal_rate(tax) -> float:
+    """(tax with $1,000 more interest − tax without) ÷ $1,000, in %.
+    `tax(extra_interest)` gives the tax for a given amount of extra interest."""
+    return 100 * (tax(EXTRA_INTEREST) - tax(0)) / EXTRA_INTEREST
+
+
+NEW_YORK_PLACES = ["New York City", "Yonkers"]  # local taxes that also apply to interest
+
+
+def state_and_local_tax(income: float, status: str, state: str, local: str | None, tax_rules: dict) -> float:
+    """State income tax, plus New York City or Yonkers tax for residents.
+    NYC taxes New York taxable income with its own brackets; Yonkers adds a
+    surcharge of a share of the New York State tax. tax_rules: "states" (by
+    state name), "nyc" (brackets by status) and "yonkers_rate"."""
+    rules = tax_rules["states"][state]
+    tax = state_tax(income, status, rules)
+    if local == "New York City":
+        tax += state_tax(income, status, {**rules, "brackets": tax_rules["nyc"]})
+    elif local == "Yonkers":
+        tax += tax_rules["yonkers_rate"] * state_tax(income, status, rules)
+    return tax
+
+
+def estimate_tax_rates(status: str, state: str, local: str | None, wages: float, gains: float,
+                       tax_rules: dict) -> tuple[float, float]:
+    """(federal %, state % including city tax) on $1,000 more interest."""
+    federal = marginal_rate(lambda extra: federal_tax(wages, gains, extra, status, tax_rules["federal"]))
+    state_rate = marginal_rate(
+        lambda extra: state_and_local_tax(wages + gains + extra, status, state, local, tax_rules)
+    )
+    return federal, state_rate
+
+
+def can_compare(wages: float | None) -> bool:
+    """"Compare all states" needs wages."""
+    return wages is not None and wages > 0
+
+
+def compare_states(status: str, wages: float, gains: float, your_rate: float | None,
+                   state_applies: bool, tax_rules: dict) -> pd.DataFrame:
+    """One row per state and DC, with New York three times (state only, New York
+    City, Yonkers): 53 rows. Columns: State, State rate (%) (including city tax),
+    Federal + state (%), and, when "Your rate" is filled, Keeps after tax (%):
+    your rate after the estimated federal rate and, if state tax applies, the
+    state rate. Maryland and Indiana are marked with their county tax range."""
+    rows = []
+    for state in tax_rules["states"]:
+        places = [None, *NEW_YORK_PLACES] if state == "New York" else [None]
+        for local in places:
+            federal, state_rate = estimate_tax_rates(status, state, local, wages, gains, tax_rules)
+            name = f"{state} ({local})" if local else state
+            if state in tax_rules["county_ranges"]:
+                low, high = tax_rules["county_ranges"][state]
+                name += f" + county tax ({low:.2f}–{high:.2f}%)"
+            row = {"State": name, "State rate (%)": state_rate, "Federal + state (%)": federal + state_rate}
+            if your_rate is not None:
+                row["Keeps after tax (%)"] = after_tax_rate(your_rate, federal, state_rate, state_applies)[0]
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def tax_rules_note(this_year: int, rules_year: int) -> str | None:
+    """A warning once the tax tables are out of date."""
+    if this_year > rules_year:
+        return f"Tax rules are from {rules_year}; this year's may differ."
+    return None
+
+
+def selected_state_rate(table: pd.DataFrame, rows: list[int]) -> float | None:
+    """The state rate of the row picked in the "Compare all states" table, for
+    the state box (state plus city for the New York City and Yonkers rows)."""
+    return float(table["State rate (%)"].iloc[rows[0]]) if rows else None
