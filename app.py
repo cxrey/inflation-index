@@ -13,6 +13,8 @@ import streamlit as st
 from calc import (
     INDEX_NAME,
     NO_DATA_REASON,
+    after_tax_rate,
+    state_tax_applies,
     gold_counts,
     us_government_gold_value,
     market_weights_unchanged,
@@ -182,6 +184,9 @@ FIRST_LOAD = {
     "show_wages": True,
     "show_m2": False,
     "your_rate": None,  # the "Your rate" box starts empty
+    "federal_tax": None,  # the tax boxes start empty
+    "state_tax": None,
+    "state_tax_applies": True,
     "yearly_update": False,  # turned on by "Weight by market size"
     "log_scale": True,
 }
@@ -239,7 +244,7 @@ GENERAL_NOTES = [
     "Based on monthly averages; daily drops were larger.",
 ]
 BITCOIN_NOTE = (
-    "Bitcoin prices from 2010–2012 come from very thin trading (few trades on "
+    "Bitcoin prices from 2010â€“2012 come from very thin trading (few trades on "
     "small early exchanges), so they are less reliable than later prices."
 )
 CASE_SHILLER_NOTE = (
@@ -256,6 +261,17 @@ TREASURY_NOTE = (
     "changed. Bond prices fall when interest rates rise, so this line drops in high-inflation "
     "periods like the 1970s and 2022. Market size counts longer-term Treasuries only; bills are "
     "left out because they behave like cash."
+)
+FEDERAL_TAX_HINT = "Your tax rate on extra income, for example 22% or 24%."
+STATE_TAX_HINT = (
+    "Your state's rate for your income bracket. Enter 0 if your state has no income tax "
+    "(for example Texas, Florida, Washington)."
+)
+TAX_NOTE = (
+    "In a taxable account, interest is taxed every year, while gains on assets you hold aren't "
+    "taxed until you sell. Treasury interest isn't taxed by states. Leave the tax boxes empty for "
+    "a Roth IRA, IRA or 401(k), or if your rate is from assets you hold. Traditional IRAs and "
+    "401(k)s are taxed when you withdraw, not each year. This is a simplification, not tax advice."
 )
 PLATINUM_NOTE = (
     "Before the 1970s, platinum was mostly sold at prices set by producers, "
@@ -414,9 +430,16 @@ def all_yearly_prices(weights: dict[str, float], waiting: list[str]) -> pd.DataF
 
 
 def rate_shortcut_clicked(text: str, value: float):
-    """A "Use ... yield" button: fill the "Your rate" box with that yield."""
+    """A "Use ... yield" button: fill the "Your rate" box with that yield.
+    Both shortcuts are Treasury yields, which states don't tax."""
     st.session_state["your_rate"] = value
     st.session_state["rate_source"] = {"text": text, "value": value}
+    st.session_state["state_tax_applies"] = state_tax_applies("treasury")
+
+
+def rate_typed():
+    """A rate typed into the "Your rate" box: state tax applies again."""
+    st.session_state["state_tax_applies"] = state_tax_applies("typed")
 
 
 def market_size_clicked():
@@ -497,10 +520,10 @@ st.caption("Choose your assets and weights in the sidebar.")
 main = st.container()
 st.caption(
     "Sources: CPI, wages, money supply, Nasdaq, 10-year Treasury yields, US home prices and luxury homes from "
-    "[FRED](https://fred.stlouisfed.org/), Federal Reserve Bank of St. Louis · "
-    "S&P 500 from [Robert Shiller](https://shillerdata.com/) · "
-    "Gold, silver and platinum from the [World Bank Pink Sheet](https://www.worldbank.org/en/research/commodity-markets) · "
-    "Crypto data: [Coin Metrics](https://coinmetrics.io/) · "
+    "[FRED](https://fred.stlouisfed.org/), Federal Reserve Bank of St. Louis Â· "
+    "S&P 500 from [Robert Shiller](https://shillerdata.com/) Â· "
+    "Gold, silver and platinum from the [World Bank Pink Sheet](https://www.worldbank.org/en/research/commodity-markets) Â· "
+    "Crypto data: [Coin Metrics](https://coinmetrics.io/) Â· "
     "Market sizes: US stocks from the [World Bank](https://data.worldbank.org/indicator/CM.MKT.LCAP.CD) "
     "(World Federation of Exchanges data, CC BY 4.0), US homes from FRED (Federal Reserve), "
     "Treasury debt from the [Federal Reserve Bank of Dallas](https://www.dallasfed.org/research/econdata/govdebt) "
@@ -508,7 +531,7 @@ st.caption(
     "and FRED (Federal Reserve), "
     "gold from the [World Gold Council](https://www.gold.org/goldhub/data/above-ground-stocks) and "
     "[USGS](https://www.usgs.gov/centers/national-minerals-information-center/gold-statistics-and-information)\n\n"
-    "This product uses the FRED® API but is not endorsed or certified by the "
+    "This product uses the FREDÂ® API but is not endorsed or certified by the "
     "Federal Reserve Bank of St. Louis."
 )
 
@@ -531,7 +554,7 @@ with main:
     ]
     to_load += [city for city in LUXURY_ASSETS if st.session_state.get(f"use_{city}")]
     for name in to_load:
-        with st.spinner(f"Downloading {name}…"):
+        with st.spinner(f"Downloading {name}â€¦"):
             try:
                 table, note = load(name)
             except Exception as error:
@@ -820,6 +843,7 @@ with main:
             format="%.2f",
             placeholder="What your money earns, for example 4 for a 4% savings account",
             key="your_rate",
+            on_change=rate_typed,
         )
         # Which shortcut filled the box, shown while the box still holds its value.
         source = st.session_state.get("rate_source")
@@ -833,13 +857,30 @@ with main:
                 shortcut_column.button(label, disabled=True)
             if explanation:
                 shortcut_column.caption(explanation)
+        # Tax on interest: the "Your rate" sentences use the rate after tax.
+        federal_column, state_column = st.columns(2)
+        federal = federal_column.number_input("Federal tax rate on interest (%)", min_value=0.0,
+                                              max_value=100.0, step=1.0, format="%.2f", key="federal_tax")
+        federal_column.caption(FEDERAL_TAX_HINT)
+        state_rate = state_column.number_input("State tax rate on interest (%)", min_value=0.0,
+                                          max_value=100.0, step=1.0, format="%.2f", key="state_tax")
+        state_column.caption(STATE_TAX_HINT)
+        state_applies = st.checkbox("State tax applies", key="state_tax_applies")
+        rate_used = your_rate
         if your_rate is not None:
-            for sentence in your_rate_sentences(your_rate / 100, basket_rate, cpi_rate):
+            rate_used, taxed, message = after_tax_rate(your_rate, federal, state_rate, state_applies)
+            if message:
+                st.warning(message)
+            if taxed:
+                st.caption(f"After tax: {rate_used:.2f}%")
+        st.caption(TAX_NOTE)
+        if your_rate is not None:
+            for sentence in your_rate_sentences(rate_used / 100, basket_rate, cpi_rate):
                 st.markdown(sentence)
 
     # --- The chart: % change since the start month ---
     # The lines are kept as levels (100 = the start month). The chart adds the
-    # two cash lines: how much less cash buys, 100 × start / now (as a level).
+    # two cash lines: how much less cash buys, 100 Ã— start / now (as a level).
     chart = lines.copy()
     chart[CASH_GOODS] = 100 * 100 / lines["CPI"]  # always shown; breaks where CPI does
     if show_basket:
@@ -894,7 +935,7 @@ with main:
     )
 
     set_by = ", ".join(last_month_set_by({**basket_tables, "CPI": tables["CPI"]}))
-    st.caption(f"Start: {month_name(start)} · Data through: {month_name(end)} (set by {set_by})")
+    st.caption(f"Start: {month_name(start)} Â· Data through: {month_name(end)} (set by {set_by})")
     for note in comparison_notes:
         st.info(note)
 
@@ -954,7 +995,7 @@ with main:
             shares = current_weights(prices, start, weights)
         st.caption(
             f"Current weights ({month_name(prices.index[-1])}): "
-            + " · ".join(f"{name} {share_text(share)}" for name, share in shares.items())
+            + " Â· ".join(f"{name} {share_text(share)}" for name, share in shares.items())
         )
         if len(shares) >= 2:  # with one asset it is always 100%, so no warning
             for name, share in shares.items():

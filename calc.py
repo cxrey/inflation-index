@@ -934,3 +934,33 @@ def gold_counts(weights: dict[str, float], reweights: dict) -> bool:
     """True when gold is in the basket at some point: above 0% at the start,
     or joining in a January (reweights from yearly_market_index)."""
     return weights.get("Gold", 0) > 0 or any("Gold" in set_weights for set_weights in reweights.values())
+
+
+# --- Version 1.4: tax on "Your rate" (all rates in %) ---
+
+TAX_TOO_HIGH = "Tax rates must add up to less than 100%"
+
+
+def after_tax_rate(your_rate: float, federal: float | None, state: float | None,
+                   state_applies: bool) -> tuple[float, bool, str | None]:
+    """Your rate after tax on interest: your rate × (1 − federal − state), all in %.
+
+    State is left out when it doesn't apply (Treasury interest). Empty boxes
+    count as 0. Only a rate above 0 is taxed. If the rates used add up to 100%
+    or more, your rate is used unchanged, with a message.
+    Returns (rate to use, whether a tax was applied, message or None).
+    Example: 4% with 24% federal and 9% state -> 4 × (1 − 0.24 − 0.09) = 2.68%.
+    """
+    tax = (federal or 0) + ((state or 0) if state_applies else 0)
+    if tax >= 100:
+        return your_rate, False, TAX_TOO_HIGH
+    if your_rate <= 0 or tax == 0:
+        return your_rate, False, None
+    return your_rate * (1 - tax / 100), True, None
+
+
+def state_tax_applies(rate_set_by: str) -> bool:
+    """Whether the "State tax applies" box should be ticked, from what last set
+    "Your rate": a Treasury shortcut button ("treasury") -> off, because states
+    don't tax Treasury interest; typing a rate ("typed") -> on."""
+    return rate_set_by != "treasury"
