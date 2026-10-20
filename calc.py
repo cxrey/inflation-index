@@ -460,13 +460,17 @@ def period_rates(prices: pd.DataFrame, cpi: pd.Series, weights: dict[str, float]
 
     market_value (when market-size weights are updated every January): each
     period instead starts with market-size weights at its own start and is
-    reweighted every January (see yearly_market_index). `prices` may then hold
-    more assets than `weights` (assets waiting to join); only the assets in
-    `weights` decide which months can start a period.
+    reweighted every January (see yearly_market_index). An asset with no data
+    yet at the period's start joins at the first January when it has both a
+    price and market-size data, so a period can start once any asset has a
+    price (for example a 20-year period with Bitcoin, which starts in 2010).
+    "—" if no asset has a price and market-size data at the period's start.
     """
     fractions = {name: weight / 100 for name, weight in weights.items()}
     available = cpi.dropna().index
-    if fractions:
+    if fractions and market_value is not None:
+        available = prices.dropna(how="all").index.intersection(available)
+    elif fractions:
         available = prices[list(fractions)].dropna().index.intersection(available)
     rates = {"basket": {}, "CPI": {}}
     for period in years:

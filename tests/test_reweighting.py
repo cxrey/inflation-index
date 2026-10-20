@@ -137,3 +137,33 @@ def test_period_rates_updated_every_january():
                          market_value=lambda asset, month: table.at[month, asset])
     for period in (1, 3, 5, 10, 20):
         assert rates["basket"][period] == pytest.approx(0.10, abs=1e-9)
+
+
+def test_period_rates_asset_joins_later_in_the_period():
+    # A from September 2006, B (like Bitcoin) only from January 2015. Both grow
+    # exactly 10% a year, so the basket does too, whenever B joins:
+    # updated every January, the 20-year column is 10% instead of "—".
+    months = pd.date_range("2006-09-01", "2026-09-01", freq="MS")
+    elapsed = (months.year - 2006) * 12 + (months.month - 9)
+    growing = pd.Series(100 * 1.1 ** (elapsed / 12), index=months)
+    late = growing.where(months >= pd.Timestamp("2015-01-01"))
+    table = pd.DataFrame({"A": growing, "B": late})
+    market_value = lambda asset, month: table.at[month, asset]  # noqa: E731 (None-like when no price)
+    rates = period_rates(table, growing, {"A": 50, "B": 50}, months[-1], market_value=market_value)
+    assert rates["basket"][20] == pytest.approx(0.10, abs=1e-9)
+    # Buy and hold (not updated every January): B has no price 20 years back, so "—".
+    common = table.dropna()
+    assert period_rates(common, growing, {"A": 50, "B": 50}, months[-1])["basket"][20] is None
+
+
+def test_period_rates_dash_when_no_asset_has_data_at_the_period_start():
+    # Only B, from January 2015: nothing has a price 20 years back, so "—";
+    # 10 years back (September 2016) works.
+    months = pd.date_range("2015-01-01", "2026-09-01", freq="MS")
+    elapsed = (months.year - 2015) * 12 + (months.month - 1)
+    growing = pd.Series(100 * 1.1 ** (elapsed / 12), index=months)
+    cpi = pd.Series(100.0, index=pd.date_range("2000-01-01", "2026-09-01", freq="MS"))
+    table = pd.DataFrame({"B": growing})
+    rates = period_rates(table, cpi, {"B": 100}, months[-1], market_value=lambda asset, month: table.at[month, asset])
+    assert rates["basket"][20] is None
+    assert rates["basket"][10] == pytest.approx(0.10, abs=1e-9)

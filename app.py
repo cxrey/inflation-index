@@ -403,14 +403,14 @@ def market_value_of(asset: str, month) -> float | None:
 
 
 def all_yearly_prices(weights: dict[str, float], waiting: list[str]) -> pd.DataFrame:
-    """Prices for updating weights every January: one row per month the basket
-    (assets above 0%) has, one column per basket asset and per asset waiting to
-    join (empty in months it has no price)."""
-    rows = line_up({name: tables[name] for name in weights}).index
+    """Prices for updating weights every January: one column per basket asset
+    and per asset waiting to join, one row per month any of them has a price
+    (empty where an asset has none), so a period can start before every asset
+    has data and the others join later."""
     return pd.DataFrame({
-        name: tables[name].set_index(tables[name]["date"].dt.to_period("M").dt.to_timestamp())["value"].reindex(rows)
+        name: tables[name].set_index(tables[name]["date"].dt.to_period("M").dt.to_timestamp())["value"]
         for name in [*weights, *waiting]
-    })
+    }).sort_index()
 
 
 def rate_shortcut_clicked(text: str, value: float):
