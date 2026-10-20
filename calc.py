@@ -422,7 +422,7 @@ def your_rate_sentences(your_rate: float, basket_rate: float | None, cpi_rate: f
 
 
 def period_rates(prices: pd.DataFrame, cpi: pd.Series, weights: dict[str, float], end,
-                 years=(1, 3, 5, 10, 20)) -> dict[str, dict[int, float | None]]:
+                 years=(1, 3, 5, 10, 20), market_value=None) -> dict[str, dict[int, float | None]]:
     """Basket and CPI per year over the last 1, 3, 5, 10 and 20 years to `end`.
 
     Each period is calculated fresh: the basket restarts with `weights` (in %)
@@ -431,11 +431,17 @@ def period_rates(prices: pd.DataFrame, cpi: pd.Series, weights: dict[str, float]
     the month before is used with its true length. None (shown as "—") when
     an asset has no data that far back. With no basket (weights empty, for
     example while they don't add up to 100%), only CPI is calculated.
+
+    market_value (when market-size weights are updated every January): each
+    period instead starts with market-size weights at its own start and is
+    reweighted every January (see yearly_market_index). `prices` may then hold
+    more assets than `weights` (assets waiting to join); only the assets in
+    `weights` decide which months can start a period.
     """
     fractions = {name: weight / 100 for name, weight in weights.items()}
     available = cpi.dropna().index
     if fractions:
-        available = prices.dropna().index.intersection(available)
+        available = prices[list(fractions)].dropna().index.intersection(available)
     rates = {"basket": {}, "CPI": {}}
     for period in years:
         target = end - pd.DateOffset(years=period)
@@ -445,7 +451,14 @@ def period_rates(prices: pd.DataFrame, cpi: pd.Series, weights: dict[str, float]
             continue
         start = candidates.max()
         months = months_between(start, end)
-        if fractions:
+        if fractions and market_value is not None:
+            try:
+                index, _ = yearly_market_index(prices.loc[:end], start, market_value)
+                at_end = index.get(end)
+                rates["basket"][period] = None if pd.isna(at_end) else per_year(100, at_end, months)
+            except ValueError:  # no asset has market-size data at the period's start
+                rates["basket"][period] = None
+        elif fractions:
             index = asset_index(prices.loc[[start, end], list(fractions)], fractions)
             rates["basket"][period] = per_year(index.iloc[0], index.iloc[-1], months)
         else:
@@ -840,3 +853,31 @@ def yearly_market_index(prices: pd.DataFrame, start, market_value) -> tuple[pd.S
                 weights, base, level = new, month, levels[month]
                 reweights[month] = new
     return pd.Series(levels, name=INDEX_NAME), reweights
+
+
+def market_weights_unchanged(state: dict | None, current_weights: dict[str, float], start) -> bool:
+    """True while the caption says "Market-size weights as of <month>": the
+    button was pressed, no weight was edited since, and the start month is the
+    same. Only then can the weights be updated to market size every January."""
+    lines = market_caption(state, current_weights, start)
+    return len(lines) == 1 and lines[0].startswith("Market-size weights as of")
+
+
+def waiting_lines(waiting: list[str], reweights: dict, yearly: bool) -> list[str]:
+    """One line per asset that had no market-size data at the start month (so
+    it starts at 0%): when it joins, or that it stays at 0%.
+
+    reweights: the weights set at the start month and each January
+    ({month: {asset: fraction}}, from yearly_market_index); yearly: whether
+    the weights are updated every January.
+    """
+    joined = {}
+    for month in sorted(reweights):
+        for asset in reweights[month]:
+            joined.setdefault(asset, month)
+    return [
+        f"{asset}: 0% until {joined[asset]:%B %Y}, when its market-size data starts."
+        if yearly and asset in joined else
+        f"{asset}: 0% (no market-size data at the start month)."
+        for asset in waiting
+    ]

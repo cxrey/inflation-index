@@ -6,7 +6,7 @@ Market value = quantity × price, so "no new supply" means a constant quantity.
 import pandas as pd
 import pytest
 
-from calc import asset_index, yearly_market_index
+from calc import asset_index, market_weights_unchanged, period_rates, waiting_lines, yearly_market_index
 
 MONTHS = pd.to_datetime(["2020-01-01", "2020-07-01", "2021-01-01", "2021-07-01", "2022-01-01"])
 
@@ -86,3 +86,54 @@ def test_no_market_size_data_at_the_start_is_an_error():
     table = prices(A=[1, 1, 1, 1, 1])
     with pytest.raises(ValueError, match="January 2020"):
         yearly_market_index(table, MONTHS[0], lambda asset, month: None)
+
+
+# --- When updating every January is allowed, and the lines about waiting assets ---
+
+PRESSED = {"start": pd.Timestamp("2024-01-01"), "weights": {"S&P 500": 60.0, "Gold": 40.0}}
+
+
+def test_updating_turns_off_after_an_edit_or_a_new_start_month():
+    january = pd.Timestamp("2024-01-01")
+    # Right after pressing "Weight by market size": allowed.
+    assert market_weights_unchanged(PRESSED, {"S&P 500": 60.0, "Gold": 40.0}, january)
+    # Typing a weight, or pressing another weight button ("edited"): off.
+    assert not market_weights_unchanged(PRESSED, {"S&P 500": 70.0, "Gold": 30.0}, january)
+    assert not market_weights_unchanged({**PRESSED, "edited": True}, {"S&P 500": 60.0, "Gold": 40.0}, january)
+    # Another start month: off.
+    assert not market_weights_unchanged(PRESSED, {"S&P 500": 60.0, "Gold": 40.0}, pd.Timestamp("2020-01-01"))
+    # Never pressed, or Reset: off.
+    assert not market_weights_unchanged(None, {"S&P 500": 100.0}, january)
+    # Pressing the button again stores a fresh state for the new month: allowed again.
+    pressed_again = {"start": pd.Timestamp("2020-01-01"), "weights": {"S&P 500": 55.0, "Gold": 45.0}}
+    assert market_weights_unchanged(pressed_again, {"S&P 500": 55.0, "Gold": 45.0}, pd.Timestamp("2020-01-01"))
+
+
+def test_waiting_lines():
+    reweights = {
+        pd.Timestamp("1975-06-01"): {"Gold": 1.0},
+        pd.Timestamp("1976-01-01"): {"Gold": 0.4, "S&P 500": 0.6},
+    }
+    assert waiting_lines(["S&P 500"], reweights, yearly=True) == [
+        "S&P 500: 0% until January 1976, when its market-size data starts."
+    ]
+    # Not updated every January: it stays at 0%.
+    assert waiting_lines(["S&P 500"], reweights, yearly=False) == [
+        "S&P 500: 0% (no market-size data at the start month)."
+    ]
+    # Updated every January, but never joined before the end month.
+    assert waiting_lines(["Bitcoin"], reweights, yearly=True) == [
+        "Bitcoin: 0% (no market-size data at the start month)."
+    ]
+
+
+def test_period_rates_updated_every_january():
+    # Two assets each growing exactly 10% a year, no new supply: every period shows 10%.
+    months = pd.date_range("2006-09-01", "2026-09-01", freq="MS")
+    elapsed = (months.year - 2006) * 12 + (months.month - 9)
+    growing = pd.Series(100 * 1.1 ** (elapsed / 12), index=months)
+    table = pd.DataFrame({"A": growing, "B": 2 * growing})
+    rates = period_rates(table, growing, {"A": 50, "B": 50}, months[-1],
+                         market_value=lambda asset, month: table.at[month, asset])
+    for period in (1, 3, 5, 10, 20):
+        assert rates["basket"][period] == pytest.approx(0.10, abs=1e-9)

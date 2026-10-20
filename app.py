@@ -12,6 +12,10 @@ import streamlit as st
 
 from calc import (
     INDEX_NAME,
+    NO_DATA_REASON,
+    market_weights_unchanged,
+    waiting_lines,
+    yearly_market_index,
     add_tables,
     asset_index,
     basket_sentences,
@@ -176,6 +180,7 @@ FIRST_LOAD = {
     "show_wages": True,
     "show_m2": False,
     "your_rate": None,  # the "Your rate" box starts empty
+    "yearly_update": False,  # turned on by "Weight by market size"
     "log_scale": True,
 }
 # A clearly different colour for each line (readable on light and dark backgrounds).
@@ -388,6 +393,22 @@ def market_values_at(start, assets: list[str]) -> dict[str, float | None]:
     return values
 
 
+def market_value_of(asset: str, month) -> float | None:
+    """One asset's market value in a month (for updating weights every January)."""
+    return market_values_at(month, [asset])[asset]
+
+
+def all_yearly_prices(weights: dict[str, float], waiting: list[str]) -> pd.DataFrame:
+    """Prices for updating weights every January: one row per month the basket
+    (assets above 0%) has, one column per basket asset and per asset waiting to
+    join (empty in months it has no price)."""
+    rows = line_up({name: tables[name] for name in weights}).index
+    return pd.DataFrame({
+        name: tables[name].set_index(tables[name]["date"].dt.to_period("M").dt.to_timestamp())["value"].reindex(rows)
+        for name in [*weights, *waiting]
+    })
+
+
 def rate_shortcut_clicked(text: str, value: float):
     """A "Use ... yield" button: fill the "Your rate" box with that yield."""
     st.session_state["your_rate"] = value
@@ -401,17 +422,24 @@ def market_size_clicked():
 
 def apply_market_size(start):
     """Set every checked asset's weight to its share of the total market value.
-    If any checked asset can't be measured, change nothing and open the pop-up."""
+    If any checked asset can never be measured (Nasdaq, silver, platinum, a
+    city), change nothing and open the pop-up. An asset with no market-size
+    data only for this date starts at 0% and waits to join in a later January."""
     assets = checked_assets()
     values = market_values_at(start, assets)
     reasons = cannot_measure(assets, values)
-    if reasons:
-        cannot_weight_dialog(start, reasons, [asset for asset in assets if asset not in reasons])
+    never = {asset: reason for asset, reason in reasons.items() if reason != NO_DATA_REASON}
+    waiting = [asset for asset, reason in reasons.items() if reason == NO_DATA_REASON]
+    measured = [asset for asset in assets if asset not in reasons]
+    if never:
+        cannot_weight_dialog(start, never, measured, waiting)
         return
-    weights = market_size_weights(assets, values)
+    weights = market_size_weights(measured, values)
+    weights.update({asset: 0.0 for asset in waiting})
     for asset, weight in weights.items():
         st.session_state[f"weight_{asset}"] = weight
-    st.session_state["market"] = {"start": start, "weights": weights}
+    st.session_state["market"] = {"start": start, "weights": weights, "waiting": waiting}
+    st.session_state["yearly_update"] = True  # pressing the button turns January updates on
     # Keep this start month even if an unticked asset no longer limits the dates.
     st.session_state["earliest"] = None
 
@@ -425,12 +453,14 @@ def untick_and_weight(assets: list[str]):
 
 
 @st.dialog("Not every asset can be weighted by market size")
-def cannot_weight_dialog(start, reasons: dict[str, str], measurable: list[str]):
+def cannot_weight_dialog(start, reasons: dict[str, str], measurable: list[str], waiting: list[str]):
     """Nothing has changed yet: the user either unticks the assets that can't be
     measured (and the rest are weighted by market size), or cancels."""
     st.write(f"These can't be weighted by market size for {month_name(start)}:")
     st.markdown("\n".join(f"- **{asset}**: {reason}" for asset, reason in reasons.items()))
     st.write(f"Can be weighted by market size: {', '.join(measurable)}.")
+    if waiting:
+        st.write(f"No market-size data yet, so they start at 0% and join in a later January: {', '.join(waiting)}.")
     if st.button("Untick these and weight the rest by market size", type="primary",
                  on_click=untick_and_weight, args=(list(reasons),)):
         st.rerun()  # a full rerun closes the pop-up and applies the weights
@@ -650,9 +680,25 @@ market_state = st.session_state.get("market")
 market_lines = market_caption(market_state, checked, start_month)
 for line in market_lines:
     st.sidebar.caption(line)
+# Assets waiting to join (0% at the start month): filled in once the index is
+# worked out, because when they join depends on it.
+waiting_area = st.sidebar.container()
+waiting = (market_state or {}).get("waiting", [])
+# Updating every January is only possible while the weights are exactly what
+# the button set; any edit, or another start month, turns it off.
+market_unchanged = market_weights_unchanged(market_state, checked, start_month)
+if not market_unchanged:
+    st.session_state["yearly_update"] = False
+yearly = False
+if market_state:  # shown once the button has been pressed (until Reset)
+    yearly = st.sidebar.checkbox("Update to market size every January", key="yearly_update",
+                                 disabled=not market_unchanged)
 with st.sidebar.expander("How market size is measured"):
     st.markdown("\n".join(f"- {line}" for line in MARKET_SIZE_NOTE))
-st.sidebar.caption("Weights are set at the start month and change as prices move (no rebalancing).")
+st.sidebar.caption(
+    "Weights reset to market size every January." if yearly else
+    "Weights are set at the start month and change as prices move (no rebalancing)."
+)
 show_assets = st.sidebar.checkbox("Show individual assets", key="show_assets")
 
 st.sidebar.header("Compare with")
@@ -692,10 +738,28 @@ with main:
 
     # Every month from start to end, so a missing month shows as a break in
     # its line (October 2025 CPI) and a line that ends early simply stops.
-    lines = pd.DataFrame(index=pd.date_range(start, end, freq="MS"))
+    reweights = {}  # market-size weights set at the start month and each January
     if show_basket:
         prices = line_up(basket_tables).loc[start:end]  # the basket's own months
-        lines[INDEX_NAME] = asset_index(prices, {name: weight / 100 for name, weight in weights.items()})
+        if yearly:
+            # The basket's months, with every checked asset (including any waiting to join).
+            yearly_prices = all_yearly_prices(weights, waiting)
+            index, reweights = yearly_market_index(yearly_prices.loc[:end], start, market_value_of)
+            # An asset that joined later also decides the end month from then on.
+            joined_tables = {name: tables[name] for name in waiting if any(name in w for w in reweights.values())}
+            if joined_tables:
+                last = min(table["date"].max() for table in joined_tables.values())
+                end = max(month for month in months if month <= last)
+                basket_tables = {**basket_tables, **joined_tables}
+                prices = prices.loc[:end]
+            index = index.loc[:end]
+        else:
+            index = asset_index(prices, {name: weight / 100 for name, weight in weights.items()})
+    if waiting and market_unchanged:  # in the sidebar, under the market-size caption
+        waiting_area.caption("\n".join(f"- {line}" for line in waiting_lines(waiting, reweights, yearly)))
+    lines = pd.DataFrame(index=pd.date_range(start, end, freq="MS"))
+    if show_basket:
+        lines[INDEX_NAME] = index
     comparison_notes = []
     for name, shown in [("CPI", True), ("Wages", show_wages), (M2, show_m2)]:
         if not shown:
@@ -815,8 +879,12 @@ with main:
     # --- Rates over different periods: each calculated fresh, ending at the end month ---
     st.markdown(f"**Rates per year over different periods (to {month_name(end)})**")
     cpi_values = tables["CPI"].set_index("date")["value"]
-    all_prices = line_up(basket_tables) if show_basket else pd.DataFrame()
-    periods = period_rates(all_prices, cpi_values, weights if show_basket else {}, end)
+    if show_basket and yearly:  # each period: market-size weights at its start, updated every January
+        periods = period_rates(all_yearly_prices(weights, waiting), cpi_values, weights, end,
+                               market_value=market_value_of)
+    else:
+        all_prices = line_up({name: tables[name] for name in weights}) if show_basket else pd.DataFrame()
+        periods = period_rates(all_prices, cpi_values, weights if show_basket else {}, end)
     period_rows = {"CPI": periods["CPI"]}
     if show_basket:
         period_rows = {INDEX_NAME: periods["basket"], **period_rows}
@@ -854,8 +922,14 @@ with main:
     )
 
     if show_basket:
-        # Current weights: faster-rising assets become a bigger share over time.
-        shares = current_weights(prices, start, weights)
+        # Current weights: faster-rising assets become a bigger share over time
+        # (counted from the last January when the weights are updated every January).
+        if yearly:
+            last_set = max(month for month in reweights if month <= end)
+            shares = current_weights(yearly_prices.loc[:end], last_set,
+                                     {name: 100 * share for name, share in reweights[last_set].items()})
+        else:
+            shares = current_weights(prices, start, weights)
         st.caption(
             f"Current weights ({month_name(prices.index[-1])}): "
             + " · ".join(f"{name} {share_text(share)}" for name, share in shares.items())
