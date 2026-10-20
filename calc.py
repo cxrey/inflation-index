@@ -517,6 +517,7 @@ def asset_index(prices: pd.DataFrame, weights: dict[str, float]) -> pd.Series:
 
 OUNCES_PER_TONNE = 32_150.7466  # troy ounces in one metric ton
 DOLLARS_PER_MILLION = 1_000_000  # FRED's market values are in millions of dollars
+DOLLARS_PER_BILLION = 1_000_000_000  # the Dallas Fed's Treasury debt is in billions
 
 # Why an asset can't be weighted by market size.
 NO_DATA_REASON = "no market-size data for this date."
@@ -576,6 +577,30 @@ def home_market_value(start, quarterly_millions: pd.DataFrame, home_prices: pd.D
 def crypto_market_value(start, monthly_caps: pd.DataFrame) -> float | None:
     """A coin: its average market cap in the start month (None if there is none)."""
     return value_at(monthly_caps, start)
+
+
+def treasury_market_value(start, market_value_billions: pd.DataFrame, bills_monthly_millions: pd.DataFrame,
+                          bills_quarterly_millions: pd.DataFrame) -> float | None:
+    """10-year Treasury: longer-term Treasuries = the market value of all
+    marketable Treasury debt in the start month (Dallas Fed, billions) minus
+    the face value of Treasury bills (millions). Bills: the Treasury's monthly
+    figure for the start month; before that starts (January 2001), the Fed's
+    latest quarter-end at or before the start month (a quarter dated by its
+    first month ends two months later).
+    Example: $100 billion minus $20,000 million of bills = $80 billion.
+    """
+    total = value_at(market_value_billions, start)
+    if total is None:
+        return None
+    if not bills_monthly_millions.empty and start >= bills_monthly_millions["date"].min():
+        bills = value_at(bills_monthly_millions, start)
+    else:
+        quarter_ends = bills_quarterly_millions.assign(date=bills_quarterly_millions["date"] + pd.DateOffset(months=2))
+        latest = latest_at_or_before(quarter_ends, start)
+        bills = None if latest is None else latest[1]
+    if bills is None:
+        return None
+    return total * DOLLARS_PER_BILLION - bills * DOLLARS_PER_MILLION
 
 
 def gold_stock_table(production: dict[int, float], anchor_tonnes: float, anchor_date,

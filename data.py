@@ -19,6 +19,8 @@ What one monthly value is, for each series:
     Nasdaq (NASDAQCOM)      average of the month's daily closes, calculated
                             by FRED (complete months only)
     Platinum (Pink Sheet)   average of daily rates, like gold
+    10-year Treasury        a price-only index built from the monthly 10-year
+                            yield (GS10, an average of daily yields)
     Home prices (CSUSHPINSA) NOT an average of daily prices: Case-Shiller is
                             a three-month moving average of repeat home sales
                             (the "July" value covers May, June and July)
@@ -62,7 +64,7 @@ from urllib.parse import urljoin
 import pandas as pd
 import requests
 
-from calc import monthly_average
+from calc import monthly_average, treasury_index
 
 FRED_URL = "https://api.stlouisfed.org/fred/series/observations"
 COINMETRICS_URL = "https://community-api.coinmetrics.io/v4/timeseries/asset-metrics"
@@ -195,6 +197,12 @@ def fred_series(series_id: str, api_key: str, monthly_average: bool = False) -> 
 def fred_monthly_average(series_id: str, api_key: str) -> pd.DataFrame:
     """A daily FRED series (such as NASDAQCOM) as monthly averages."""
     return fred_series(series_id, api_key, monthly_average=True)
+
+
+def treasury_10y(api_key: str) -> pd.DataFrame:
+    """The 10-year Treasury price-only index (100 in April 1953), built from
+    the monthly 10-year yield (FRED GS10); see calc.treasury_index."""
+    return treasury_index(fred_series("GS10", api_key))
 
 
 def shiller_date(number: float) -> pd.Timestamp:
@@ -419,6 +427,7 @@ if __name__ == "__main__":
     show("NNBEMVQ027S", fred_series, "NNBEMVQ027S", key)
     # Yields and the 10-year Treasury's market size.
     show("GS10", fred_series, "GS10", key)
+    show("TREASURY_10Y", treasury_10y, key)
     show("TB3MS", fred_series, "TB3MS", key)
     show("MVMTD027MNFRBDAL", fred_series, "MVMTD027MNFRBDAL", key)
     show("TREASURY_BILLS", treasury_bills)

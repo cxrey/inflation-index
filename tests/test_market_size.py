@@ -18,6 +18,7 @@ from calc import (
     market_size_weights,
     move_to_start,
     stock_market_value,
+    treasury_market_value,
 )
 
 ANCHOR_DATE = pd.Timestamp("2026-06-30")
@@ -122,6 +123,38 @@ def test_homes_quarter_end_moved_to_start_month():
     assert home_market_value(pd.Timestamp("2024-05-01"), homes, prices) == pytest.approx(110e6, abs=1e-3)
     # February 2024 is before that quarter ends: no data.
     assert home_market_value(pd.Timestamp("2024-02-01"), homes, prices) is None
+
+
+# --- 10-year Treasury (Dallas Fed market value minus bills) ---
+
+DALLAS = table({"1990-05": 2_000.0, "2024-01": 100.0, "2024-02": 101.0})  # billions
+BILLS_MONTHLY = table({"2001-01": 500_000.0, "2024-01": 20_000.0})  # millions, from January 2001
+BILLS_QUARTERLY = table({"1990-01": 400_000.0, "1990-04": 450_000.0})  # millions, quarter-ends Mar and Jun
+
+
+def test_treasury_market_size():
+    # $100 billion minus $20,000 million of bills = $80 billion.
+    value = treasury_market_value(pd.Timestamp("2024-01-01"), DALLAS, BILLS_MONTHLY, BILLS_QUARTERLY)
+    assert value == pytest.approx(80e9, abs=1e-3)
+
+
+def test_treasury_before_2001_uses_the_feds_quarter_end():
+    # May 1990: the quarter dated January ends in March ($400,000 million);
+    # the one dated April ends in June, after May. $2,000 billion - $400 billion = $1,600 billion.
+    value = treasury_market_value(pd.Timestamp("1990-05-01"), DALLAS, BILLS_MONTHLY, BILLS_QUARTERLY)
+    assert value == pytest.approx(1_600e9, abs=1e-3)
+
+
+def test_treasury_without_data():
+    # Before the first bills figure, or a month the Dallas Fed hasn't published: no data.
+    for start in ("1989-12-01", "2024-03-01"):
+        value = treasury_market_value(pd.Timestamp(start), DALLAS, BILLS_MONTHLY, BILLS_QUARTERLY)
+        assert value is None
+        assert cannot_measure(["10-year Treasury"], {"10-year Treasury": value}) == {
+            "10-year Treasury": NO_DATA_REASON
+        }
+    # February 2024: the Dallas Fed has it, but the Treasury's bills figure doesn't.
+    assert treasury_market_value(pd.Timestamp("2024-02-01"), DALLAS, BILLS_MONTHLY, BILLS_QUARTERLY) is None
 
 
 # --- Crypto (monthly average market caps) ---

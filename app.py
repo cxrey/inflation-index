@@ -42,6 +42,7 @@ from calc import (
     split_categories,
     stock_market_value,
     split_evenly,
+    treasury_market_value,
     summary_table,
     valid_months,
     weight_text,
@@ -61,6 +62,8 @@ from data import (
     fred_series,
     pink_sheet,
     sp500,
+    treasury_10y,
+    treasury_bills,
     world_bank_us_market_cap,
 )
 
@@ -72,6 +75,7 @@ SERIES = {
     "US home prices": ("CSUSHPINSA", fred_series, ["CSUSHPINSA"]),
     "S&P 500": ("SP500", sp500, []),
     "Nasdaq": ("NASDAQCOM", fred_monthly_average, ["NASDAQCOM"]),
+    "10-year Treasury": ("TREASURY_10Y", treasury_10y, []),
     "Gold": ("GOLD", pink_sheet, ["Gold"]),
     "Silver": ("SILVER", pink_sheet, ["Silver"]),
     "Platinum": ("PLATINUM", pink_sheet, ["Platinum"]),
@@ -91,16 +95,21 @@ SERIES.update({
     f"{LUXURY} ({city})": (f"LUX_{series_id}", fred_series, [series_id])
     for city, series_id in LUXURY_CITIES.items()
 })
-# Market-size data for the "Weight by market size" button: which series gives
+# Market-size data for the "Weight by market size" button: which series give
 # each asset's market value. Loaded only when needed (not with the prices).
 COIN_CODES = {"Bitcoin": "btc", "Ethereum": "eth", "Zcash": "zec", "Monero": "xmr", "Solana": "sol"}
 MARKET_SERIES = {
-    "S&P 500": "US stock market value",
-    "US home prices": "US home market value",
-    **{coin: f"{coin} market cap" for coin in COIN_CODES},
+    "S&P 500": ["US stock market value"],
+    "10-year Treasury": ["Treasury debt market value", "Treasury bills (monthly)", "Treasury bills (quarterly)"],
+    "US home prices": ["US home market value"],
+    **{coin: [f"{coin} market cap"] for coin in COIN_CODES},
 }
+MARKET_ONLY = {name for names in MARKET_SERIES.values() for name in names}
 SERIES.update({
     "US stock market value": ("US_MARKET_CAP", world_bank_us_market_cap, []),
+    "Treasury debt market value": ("MVMTD027MNFRBDAL", fred_series, ["MVMTD027MNFRBDAL"]),
+    "Treasury bills (monthly)": ("TREASURY_BILLS", treasury_bills, []),
+    "Treasury bills (quarterly)": ("BOGZ1FL313161110Q", fred_series, ["BOGZ1FL313161110Q"]),
     "US home market value": ("HNOREMQ027S", fred_series, ["HNOREMQ027S"]),
     **{f"{coin} market cap": (f"CAP_{code.upper()}", crypto_market_cap, [code]) for coin, code in COIN_CODES.items()},
 })
@@ -112,7 +121,7 @@ GOLD_INVESTMENT_BY_YEAR_END = {
         pd.Timestamp(PINK_SHEET_STARTS["Gold"]),
     ).items()
 }
-FRED_DOWNLOADS = (fred_series, fred_monthly_average)
+FRED_DOWNLOADS = (fred_series, fred_monthly_average, treasury_10y)
 
 
 # Layer A: a successful download is remembered for 24 hours. A failed one is
@@ -137,9 +146,10 @@ def load(name: str) -> tuple[pd.DataFrame, str | None]:
 # cities are separate assets in their own section inside "Real estate".
 ASSET_GROUPS = {
     "Equities": ["S&P 500", "Nasdaq"],
+    "Fixed Income": ["10-year Treasury"],
+    "Real estate": ["US home prices"],
     "Commodities": ["Gold", "Silver", "Platinum"],
     "Crypto": ["Bitcoin", "Ethereum", "Zcash", "Monero", "Solana"],
-    "Real estate": ["US home prices"],
 }
 MAIN_ASSETS = [asset for assets in ASSET_GROUPS.values() for asset in assets]
 LUXURY_ASSETS = [f"{LUXURY} ({city})" for city in LUXURY_CITIES]
@@ -166,7 +176,7 @@ LINE_COLORS = {
 }
 # Colours for the optional individual-asset lines (distinct from the main lines).
 ASSET_COLORS = {
-    "US home prices": "#a16207", "S&P 500": "#ef4444",
+    "US home prices": "#a16207", "S&P 500": "#ef4444", "10-year Treasury": "#6366f1",
     "Nasdaq": "#0f766e", "Gold": "#eab308", "Silver": "#94a3b8", "Platinum": "#78716c",
     "Bitcoin": "#d946ef", "Ethereum": "#8b5cf6", "Zcash": "#84cc16",
     "Monero": "#ec4899", "Solana": "#06b6d4",
@@ -184,10 +194,14 @@ MARKET_SIZE_HELP = (
     "to untick them first."
 )
 MARKET_SIZE_NOTE = [
-    "Each asset is weighted by the size of the market its price comes from. Stock and home "
-    "prices are US, so they use US market sizes; gold and crypto trade in one global market, "
+    "Each asset is weighted by the size of the market its price comes from. Stock, Treasury and "
+    "home prices are US, so they use US market sizes; gold and crypto trade in one global market, "
     "so they use world totals. That gives gold more weight than it has in US wealth alone.",
     "US stocks: total value of US companies listed on US exchanges (World Bank).",
+    "10-year Treasury: market value of all marketable Treasury debt (Federal Reserve Bank of "
+    "Dallas) minus Treasury bills at face value (US Treasury; Federal Reserve before 2001), so "
+    "it counts notes and bonds of every length, not only 10-year ones. Floating-rate notes may "
+    "be included in the market-value figure (up to about 3% of it).",
     "US homes: owner-occupied real estate, including land, plus nonprofits' property "
     "(Federal Reserve). Rental housing owned by landlords isn't included, so homes' weight "
     "is somewhat low.",
@@ -216,6 +230,13 @@ CASE_SHILLER_NOTE = (
 LUXURY_NOTE = (
     "Luxury homes are Case-Shiller's high tier: the most expensive third of "
     "homes sold in that city's area."
+)
+TREASURY_NOTE = (
+    "10-year Treasury: price change of 10-year US Treasuries, interest not included. Most of a "
+    "bond's return is interest, so this line shows only how the cost of buying bond income "
+    "changed. Bond prices fall when interest rates rise, so this line drops in high-inflation "
+    "periods like the 1970s and 2022. Market size counts longer-term Treasuries only; bills are "
+    "left out because they behave like cash."
 )
 PLATINUM_NOTE = (
     "Before the 1970s, platinum was mostly sold at prices set by producers, "
@@ -339,14 +360,18 @@ def market_values_at(start, assets: list[str]) -> dict[str, float | None]:
     values = {}
     for asset in assets:
         try:
+            # The asset's market-size tables, in the order listed in MARKET_SERIES.
+            market = [load(name)[0] for name in MARKET_SERIES.get(asset, [])]
             if asset == "S&P 500":
-                values[asset] = stock_market_value(start, load(MARKET_SERIES[asset])[0], tables[asset])
+                values[asset] = stock_market_value(start, market[0], tables[asset])
+            elif asset == "10-year Treasury":
+                values[asset] = treasury_market_value(start, *market)
             elif asset == "US home prices":
-                values[asset] = home_market_value(start, load(MARKET_SERIES[asset])[0], tables[asset])
+                values[asset] = home_market_value(start, market[0], tables[asset])
             elif asset == "Gold":
                 values[asset] = gold_market_value(start, GOLD_INVESTMENT_BY_YEAR_END, tables[asset])
             elif asset in MARKET_SERIES:  # a coin
-                values[asset] = crypto_market_value(start, load(MARKET_SERIES[asset])[0])
+                values[asset] = crypto_market_value(start, market[0])
         except Exception:  # could not be loaded and has no backup: no data
             values[asset] = None
     return values
@@ -419,13 +444,16 @@ st.caption("Choose your assets and weights in the sidebar.")
 # next) always stays at the bottom, even when the page stops early.
 main = st.container()
 st.caption(
-    "Sources: CPI, wages, money supply, Nasdaq, US home prices and luxury homes from "
+    "Sources: CPI, wages, money supply, Nasdaq, 10-year Treasury yields, US home prices and luxury homes from "
     "[FRED](https://fred.stlouisfed.org/), Federal Reserve Bank of St. Louis · "
     "S&P 500 from [Robert Shiller](https://shillerdata.com/) · "
     "Gold, silver and platinum from the [World Bank Pink Sheet](https://www.worldbank.org/en/research/commodity-markets) · "
     "Crypto data: [Coin Metrics](https://coinmetrics.io/) · "
     "Market sizes: US stocks from the [World Bank](https://data.worldbank.org/indicator/CM.MKT.LCAP.CD) "
     "(World Federation of Exchanges data, CC BY 4.0), US homes from FRED (Federal Reserve), "
+    "Treasury debt from the [Federal Reserve Bank of Dallas](https://www.dallasfed.org/research/econdata/govdebt) "
+    "(via FRED), the [US Treasury](https://fiscaldata.treasury.gov/datasets/monthly-statement-public-debt/) "
+    "and FRED (Federal Reserve), "
     "gold from the [World Gold Council](https://www.gold.org/goldhub/data/above-ground-stocks) and "
     "[USGS](https://www.usgs.gov/centers/national-minerals-information-center/gold-statistics-and-information)\n\n"
     "This product uses the FRED® API but is not endorsed or certified by the "
@@ -447,7 +475,7 @@ with main:
     # Every series except luxury homes, plus only the luxury-homes cities that are ticked.
     to_load = [
         name for name in SERIES
-        if not name.startswith(LUXURY) and name not in MARKET_SERIES.values()
+        if not name.startswith(LUXURY) and name not in MARKET_ONLY
     ]
     to_load += [city for city in LUXURY_ASSETS if st.session_state.get(f"use_{city}")]
     for name in to_load:
@@ -813,6 +841,8 @@ with main:
         st.info(CASE_SHILLER_NOTE)
     if any(name.startswith(LUXURY) for name in weights):
         st.info(LUXURY_NOTE)
+    if "10-year Treasury" in weights:
+        st.info(TREASURY_NOTE)
     if "Platinum" in weights:
         st.info(PLATINUM_NOTE)
     if needs_bitcoin_note(weights, start):
