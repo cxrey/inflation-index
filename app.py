@@ -14,6 +14,7 @@ from calc import (
     INDEX_NAME,
     asset_index,
     basket_sentences,
+    cannot_measure,
     cpi_sentence,
     gold_market_value,
     gold_stock_table,
@@ -178,7 +179,9 @@ ASSET_COLORS.update(zip(LUXURY_ASSETS, [
 DOMINANT_SHARE = 80  # warn when one asset is more than this % of the index
 MARKET_SIZE_HELP = (
     "Weights each asset by its total market value, the way the S&P 500 weights its "
-    "companies. US stocks are available from December 1975."
+    "companies. US stocks are available from December 1975. Nasdaq, silver, platinum and "
+    "luxury homes by city have no market-size data: if any are ticked, the button offers "
+    "to untick them first."
 )
 MARKET_SIZE_NOTE = [
     "Each asset is weighted by the size of the market its price comes from. Stock and home "
@@ -355,14 +358,42 @@ def market_size_clicked():
 
 
 def apply_market_size(start):
-    """Set every checked asset's weight to its share of the total market value."""
-    assets = [asset for asset in ASSETS if st.session_state.get(f"use_{asset}")]
-    weights, reasons = market_size_weights(assets, market_values_at(start, assets))
+    """Set every checked asset's weight to its share of the total market value.
+    If any checked asset can't be measured, change nothing and open the pop-up."""
+    assets = checked_assets()
+    values = market_values_at(start, assets)
+    reasons = cannot_measure(assets, values)
+    if reasons:
+        cannot_weight_dialog(start, reasons, [asset for asset in assets if asset not in reasons])
+        return
+    weights = market_size_weights(assets, values)
     for asset, weight in weights.items():
         st.session_state[f"weight_{asset}"] = weight
-    st.session_state["market"] = {"start": start, "weights": weights, "reasons": reasons}
-    # Keep this start month even if an asset set to 0% no longer limits the dates.
+    st.session_state["market"] = {"start": start, "weights": weights}
+    # Keep this start month even if an unticked asset no longer limits the dates.
     st.session_state["earliest"] = None
+
+
+def untick_and_weight(assets: list[str]):
+    """The pop-up's "Untick these" button: untick them, then weight the rest
+    (on the full rerun that follows)."""
+    for asset in assets:
+        st.session_state[f"use_{asset}"] = False
+    st.session_state["market_pressed"] = True
+
+
+@st.dialog("Not every asset can be weighted by market size")
+def cannot_weight_dialog(start, reasons: dict[str, str], measurable: list[str]):
+    """Nothing has changed yet: the user either unticks the assets that can't be
+    measured (and the rest are weighted by market size), or cancels."""
+    st.write(f"These can't be weighted by market size for {month_name(start)}:")
+    st.markdown("\n".join(f"- **{asset}**: {reason}" for asset, reason in reasons.items()))
+    st.write(f"Can be weighted by market size: {', '.join(measurable)}.")
+    if st.button("Untick these and weight the rest by market size", type="primary",
+                 on_click=untick_and_weight, args=(list(reasons),)):
+        st.rerun()  # a full rerun closes the pop-up and applies the weights
+    if st.button("Cancel"):
+        st.rerun()
 
 
 def reset_clicked():
@@ -549,17 +580,22 @@ if months:
     st.session_state["earliest"] = earliest
 start_month = st.session_state.get("start") if months else None
 
-# The market-size button only works if a checked asset has market-size data then.
-market_ok = start_month is not None and sum(
-    market_size_weights(list(checked), market_values_at(start_month, list(checked)))[0].values()
-) > 0
+# The market-size button only works if a checked asset has market-size data then
+# (any others are offered for unticking in the pop-up).
+market_help = MARKET_SIZE_HELP
+market_ok = False
+if start_month is not None:
+    unmeasurable = cannot_measure(list(checked), market_values_at(start_month, list(checked)))
+    market_ok = any(asset not in unmeasurable for asset in checked)
+    if checked and not market_ok:
+        market_help += f"\n\nNone of your ticked assets has market-size data for {month_name(start_month)}."
 
 with st.sidebar.container(horizontal=True):
     st.button("Split evenly", on_click=split_evenly_clicked)
     st.button("Split categories evenly", on_click=split_categories_clicked)
     st.button("Make it 100%", on_click=make_100_clicked)
     st.button("Weight by market size", on_click=market_size_clicked, disabled=not market_ok,
-              help=MARKET_SIZE_HELP)
+              help=market_help)
     st.button("Reset", on_click=reset_clicked)
 if "weights_message" in st.session_state:
     st.sidebar.info(st.session_state.pop("weights_message"))
@@ -568,10 +604,6 @@ market_state = st.session_state.get("market")
 market_lines = market_caption(market_state, checked, start_month)
 for line in market_lines:
     st.sidebar.caption(line)
-if market_lines and market_lines[0].startswith("Market-size weights as of") and market_state["reasons"]:
-    st.sidebar.caption("Set to 0%:\n" + "\n".join(
-        f"- {asset}: {reason}" for asset, reason in market_state["reasons"].items()
-    ))
 with st.sidebar.expander("How market size is measured"):
     st.markdown("\n".join(f"- {line}" for line in MARKET_SIZE_NOTE))
 st.sidebar.caption("Weights are set at the start month and change as prices move (no rebalancing).")

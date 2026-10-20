@@ -518,7 +518,7 @@ def asset_index(prices: pd.DataFrame, weights: dict[str, float]) -> pd.Series:
 OUNCES_PER_TONNE = 32_150.7466  # troy ounces in one metric ton
 DOLLARS_PER_MILLION = 1_000_000  # FRED's market values are in millions of dollars
 
-# Why an asset gets 0% from the market-size button.
+# Why an asset can't be weighted by market size.
 NO_DATA_REASON = "no market-size data for this date."
 SILVER_PLATINUM_REASON = "no reliable estimate of how much exists above ground."
 
@@ -615,9 +615,8 @@ def gold_market_value(start, investment_by_year_end: dict[int, float], gold_pric
     return investment_by_year_end[max(years)] * OUNCES_PER_TONNE * price
 
 
-def market_size_weights(checked: list[str], market_values: dict[str, float | None]) -> tuple[dict[str, float], dict[str, str]]:
-    """Weights (in %) proportional to each checked asset's market value, and the
-    reason for every asset set to 0%.
+def cannot_measure(checked: list[str], market_values: dict[str, float | None]) -> dict[str, str]:
+    """The checked assets that can't be weighted by market size, each with the reason.
 
     market_values: the market value in dollars of each asset that has a market
     size at all (stocks, homes, gold, crypto); None means no data for this date.
@@ -640,10 +639,14 @@ def market_size_weights(checked: list[str], market_values: dict[str, float | Non
             reasons[asset] = SILVER_PLATINUM_REASON
         elif market_values.get(asset) is None:
             reasons[asset] = NO_DATA_REASON
-    sized = {asset: market_values[asset] for asset in checked if asset not in reasons}
-    total = sum(sized.values())
-    weights = {asset: (100 * sized[asset] / total if asset in sized else 0.0) for asset in checked}
-    return weights, reasons
+    return reasons
+
+
+def market_size_weights(assets: list[str], market_values: dict[str, float]) -> dict[str, float]:
+    """Weights (in %) proportional to each asset's market value. Every asset
+    must have a market value (see cannot_measure)."""
+    total = sum(market_values[asset] for asset in assets)
+    return {asset: 100 * market_values[asset] / total for asset in assets}
 
 
 def market_caption(state: dict | None, current_weights: dict[str, float], start) -> list[str]:

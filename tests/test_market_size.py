@@ -8,6 +8,7 @@ from calc import (
     NO_DATA_REASON,
     OUNCES_PER_TONNE,
     SILVER_PLATINUM_REASON,
+    cannot_measure,
     crypto_market_value,
     gold_market_value,
     gold_stock_table,
@@ -32,40 +33,49 @@ def table(values: dict[str, float]) -> pd.DataFrame:
 def test_weights_in_proportion_to_market_size():
     # Stocks 83.05, homes 54.07, gold 11.8, Bitcoin 1.63 (trillions): total 150.55.
     values = {"S&P 500": 83.05e12, "US home prices": 54.07e12, "Gold": 11.8e12, "Bitcoin": 1.63e12}
-    weights, reasons = market_size_weights(list(values), values)
+    assert cannot_measure(list(values), values) == {}
+    weights = market_size_weights(list(values), values)
     assert weights == pytest.approx({name: 100 * value / 150.55e12 for name, value in values.items()}, abs=1e-9)
     assert sum(weights.values()) == pytest.approx(100, abs=1e-9)
-    assert reasons == {}
+
+
+def test_untick_what_cannot_be_measured_then_weight_the_rest():
+    # S&P 500, Gold and New York ticked: New York can't be measured (the pop-up lists it).
+    checked = ["S&P 500", "Gold", "Luxury homes (New York)"]
+    values = {"S&P 500": 50e12, "Gold": 25e12}  # stocks $50 trillion, gold $25 trillion
+    reasons = cannot_measure(checked, values)
+    assert list(reasons) == ["Luxury homes (New York)"]
+    # After unticking New York: 50 : 25 = 2 : 1, so 66.67% and 33.33%.
+    weights = market_size_weights(["S&P 500", "Gold"], values)
+    assert weights == pytest.approx({"S&P 500": 200 / 3, "Gold": 100 / 3}, abs=1e-9)
 
 
 def test_nasdaq_messages():
-    # With S&P 500 checked: Nasdaq 0%, "already included".
-    weights, reasons = market_size_weights(["S&P 500", "Nasdaq"], {"S&P 500": 1e12})
-    assert weights == {"S&P 500": 100.0, "Nasdaq": 0.0}
+    # With S&P 500 checked: "already included".
+    reasons = cannot_measure(["S&P 500", "Nasdaq"], {"S&P 500": 1e12})
+    assert list(reasons) == ["Nasdaq"]
     assert reasons["Nasdaq"].startswith("already included in the S&P 500 row")
-    # Nasdaq alone: 0%, "check S&P 500".
-    weights, reasons = market_size_weights(["Nasdaq"], {})
-    assert weights == {"Nasdaq": 0.0}
-    assert "check S&P 500 to include US stocks" in reasons["Nasdaq"]
+    # Nasdaq alone: "check S&P 500".
+    assert "check S&P 500 to include US stocks" in cannot_measure(["Nasdaq"], {})["Nasdaq"]
 
 
 def test_luxury_cities_messages():
-    _, reasons = market_size_weights(["US home prices", "Luxury homes (Boston)"], {"US home prices": 1e12})
-    assert reasons["Luxury homes (Boston)"] == "already included in US home prices."
-    _, reasons = market_size_weights(["Luxury homes (Boston)"], {})
+    reasons = cannot_measure(["US home prices", "Luxury homes (Boston)"], {"US home prices": 1e12})
+    assert reasons == {"Luxury homes (Boston)": "already included in US home prices."}
+    reasons = cannot_measure(["Luxury homes (Boston)"], {})
     assert "check US home prices to include US homes" in reasons["Luxury homes (Boston)"]
 
 
 def test_silver_gets_its_message():
-    weights, reasons = market_size_weights(["Gold", "Silver"], {"Gold": 1e12})
-    assert weights["Silver"] == 0.0
-    assert reasons["Silver"] == SILVER_PLATINUM_REASON == "no reliable estimate of how much exists above ground."
+    reasons = cannot_measure(["Gold", "Silver"], {"Gold": 1e12})
+    assert reasons == {"Silver": SILVER_PLATINUM_REASON}
+    assert SILVER_PLATINUM_REASON == "no reliable estimate of how much exists above ground."
 
 
 def test_no_data_at_the_start_month():
-    weights, reasons = market_size_weights(["S&P 500", "Bitcoin"], {"S&P 500": 1e12, "Bitcoin": None})
-    assert weights == {"S&P 500": 100.0, "Bitcoin": 0.0}
-    assert reasons["Bitcoin"] == NO_DATA_REASON == "no market-size data for this date."
+    reasons = cannot_measure(["S&P 500", "Bitcoin"], {"S&P 500": 1e12, "Bitcoin": None})
+    assert reasons == {"Bitcoin": NO_DATA_REASON}
+    assert NO_DATA_REASON == "no market-size data for this date."
 
 
 # --- Units and moving a value to the start month ---
@@ -95,11 +105,11 @@ def test_stocks_moved_by_sp500():
 def test_stocks_before_december_1975_have_no_data():
     for start in ("1975-06-01", "1970-01-01"):
         value = stock_market_value(pd.Timestamp(start), WORLD_BANK, SP500)
-        weights, reasons = market_size_weights(["S&P 500"], {"S&P 500": value})
-        assert weights["S&P 500"] == 0.0 and reasons["S&P 500"] == NO_DATA_REASON
-    # December 1975 itself has data, so a non-zero weight.
+        assert cannot_measure(["S&P 500"], {"S&P 500": value}) == {"S&P 500": NO_DATA_REASON}
+    # December 1975 itself has data, so it can be weighted.
     value = stock_market_value(pd.Timestamp("1975-12-01"), WORLD_BANK, SP500)
-    assert market_size_weights(["S&P 500"], {"S&P 500": value})[0]["S&P 500"] == 100.0
+    assert cannot_measure(["S&P 500"], {"S&P 500": value}) == {}
+    assert market_size_weights(["S&P 500"], {"S&P 500": value})["S&P 500"] == 100.0
 
 
 # --- US homes (FRED quarters, in millions) ---
@@ -119,15 +129,14 @@ def test_homes_quarter_end_moved_to_start_month():
 def test_solana_from_may_2020():
     caps = table({"2020-05": 5.3e6, "2020-06": 10.8e6})
     assert crypto_market_value(pd.Timestamp("2020-05-01"), caps) == pytest.approx(5.3e6)
-    weights, _ = market_size_weights(["S&P 500", "Solana"], {"S&P 500": 1e12, "Solana": 5.3e6})
-    assert weights["Solana"] > 0
+    assert market_size_weights(["S&P 500", "Solana"], {"S&P 500": 1e12, "Solana": 5.3e6})["Solana"] > 0
     assert crypto_market_value(pd.Timestamp("2020-04-01"), caps) is None
 
 
 def test_bitcoin_basket_starting_in_2015():
     caps = table({"2015-01": 3.5e9})
     value = crypto_market_value(pd.Timestamp("2015-01-01"), caps)
-    assert market_size_weights(["Bitcoin"], {"Bitcoin": value})[0]["Bitcoin"] == 100.0
+    assert market_size_weights(["Bitcoin"], {"Bitcoin": value})["Bitcoin"] == 100.0
 
 
 # --- Gold ---
