@@ -12,6 +12,7 @@ import streamlit as st
 
 from calc import (
     INDEX_NAME,
+    add_tables,
     asset_index,
     basket_sentences,
     cannot_measure,
@@ -38,6 +39,7 @@ from calc import (
     percent_text,
     percent_ticks,
     period_rates,
+    rate_shortcut,
     set_section_total,
     split_categories,
     stock_market_value,
@@ -89,6 +91,13 @@ M2 = "Money supply (M2)"
 CASH_GOODS = "Cash (in consumer goods)"  # how much less cash buys at the store
 CASH_BASKET = "Cash (in your basket)"  # how much less of your basket cash buys
 SERIES[M2] = ("M2SL", fred_series, ["M2SL"])
+# Yields for the "Your rate" shortcut buttons: button label and a line under it.
+RATE_SHORTCUTS = {
+    "10-year Treasury yield": ("Use 10-year Treasury yield", None),
+    "3-month T-bill yield": ("Use 3-month T-bill yield", "About what safe cash earns (slightly understates it)."),
+}
+SERIES["10-year Treasury yield"] = ("GS10", fred_series, ["GS10"])
+SERIES["3-month T-bill yield"] = ("TB3MS", fred_series, ["TB3MS"])
 # Luxury homes: one series per city; only the selected city is downloaded.
 LUXURY = "Luxury homes"
 SERIES.update({
@@ -101,7 +110,7 @@ COIN_CODES = {"Bitcoin": "btc", "Ethereum": "eth", "Zcash": "zec", "Monero": "xm
 MARKET_SERIES = {
     "S&P 500": ["US stock market value"],
     "10-year Treasury": ["Treasury debt market value", "Treasury bills (monthly)", "Treasury bills (quarterly)"],
-    "US home prices": ["US home market value"],
+    "US home prices": ["US home market value", "US landlord home market value"],
     **{coin: [f"{coin} market cap"] for coin in COIN_CODES},
 }
 MARKET_ONLY = {name for names in MARKET_SERIES.values() for name in names}
@@ -111,6 +120,7 @@ SERIES.update({
     "Treasury bills (monthly)": ("TREASURY_BILLS", treasury_bills, []),
     "Treasury bills (quarterly)": ("BOGZ1FL313161110Q", fred_series, ["BOGZ1FL313161110Q"]),
     "US home market value": ("HNOREMQ027S", fred_series, ["HNOREMQ027S"]),
+    "US landlord home market value": ("NNBEMVQ027S", fred_series, ["NNBEMVQ027S"]),
     **{f"{coin} market cap": (f"CAP_{code.upper()}", crypto_market_cap, [code]) for coin, code in COIN_CODES.items()},
 })
 # Investment gold (tonnes) at each year-end, back to the year-end before our first gold price.
@@ -202,9 +212,9 @@ MARKET_SIZE_NOTE = [
     "Dallas) minus Treasury bills at face value (US Treasury; Federal Reserve before 2001), so "
     "it counts notes and bonds of every length, not only 10-year ones. Floating-rate notes may "
     "be included in the market-value figure (up to about 3% of it).",
-    "US homes: owner-occupied real estate, including land, plus nonprofits' property "
-    "(Federal Reserve). Rental housing owned by landlords isn't included, so homes' weight "
-    "is somewhat low.",
+    "US homes: owner-occupied and landlord-owned residential real estate, including land, plus "
+    "nonprofits' property (Federal Reserve). Rental housing owned by large corporations and "
+    "REITs isn't included.",
     "Gold: total from mining history (World Gold Council, USGS), investment gold only (not "
     "jewelry). The investment share uses today's figure for all years, so earlier years are "
     "estimates. USGS's yearly mining totals are lower than the World Gold Council's, so earlier "
@@ -365,16 +375,23 @@ def market_values_at(start, assets: list[str]) -> dict[str, float | None]:
             if asset == "S&P 500":
                 values[asset] = stock_market_value(start, market[0], tables[asset])
             elif asset == "10-year Treasury":
-                values[asset] = treasury_market_value(start, *market)
+                values[asset] = treasury_market_value(start, *market, tables[asset])
             elif asset == "US home prices":
-                values[asset] = home_market_value(start, market[0], tables[asset])
+                # Households' homes + landlords' homes = all US homes.
+                values[asset] = home_market_value(start, add_tables(*market), tables[asset])
             elif asset == "Gold":
                 values[asset] = gold_market_value(start, GOLD_INVESTMENT_BY_YEAR_END, tables[asset])
             elif asset in MARKET_SERIES:  # a coin
-                values[asset] = crypto_market_value(start, market[0])
+                values[asset] = crypto_market_value(start, market[0], tables[asset])
         except Exception:  # could not be loaded and has no backup: no data
             values[asset] = None
     return values
+
+
+def rate_shortcut_clicked(text: str, value: float):
+    """A "Use ... yield" button: fill the "Your rate" box with that yield."""
+    st.session_state["your_rate"] = value
+    st.session_state["rate_source"] = {"text": text, "value": value}
 
 
 def market_size_clicked():
@@ -425,6 +442,7 @@ def reset_clicked():
     """Back to the first-load page. Each box is set explicitly (not just
     forgotten), so the browser shows the reset values too."""
     st.session_state.pop("market", None)  # removes the market-size caption
+    st.session_state.pop("rate_source", None)  # the "Your rate" box is emptied
     for asset in ASSETS:
         st.session_state.pop(f"weight_{asset}", None)
     st.session_state.update(FIRST_LOAD)
@@ -707,7 +725,8 @@ with main:
             st.markdown(keep_up)
         if period_months < 12:
             st.info("Rates per year need at least 12 months between the start and end month.")
-        your_rate = st.number_input(
+        box_column, shortcut_column = st.columns([3, 2])
+        your_rate = box_column.number_input(
             "Your rate (% per year)",
             min_value=-99.99,  # must be above -100%
             max_value=1000.0,
@@ -716,6 +735,18 @@ with main:
             placeholder="What your money earns, for example 4 for a 4% savings account",
             key="your_rate",
         )
+        # Which shortcut filled the box, shown while the box still holds its value.
+        source = st.session_state.get("rate_source")
+        if source and your_rate == source["value"]:
+            box_column.caption(f"{source['text']}: {source['value']:.2f}%")
+        for name, (label, explanation) in RATE_SHORTCUTS.items():
+            if name in tables:
+                text, value = rate_shortcut(name, tables[name])
+                shortcut_column.button(label, on_click=rate_shortcut_clicked, args=(text, value))
+            else:  # could not be loaded and has no backup
+                shortcut_column.button(label, disabled=True)
+            if explanation:
+                shortcut_column.caption(explanation)
         if your_rate is not None:
             for sentence in your_rate_sentences(your_rate / 100, basket_rate, cpi_rate):
                 st.markdown(sentence)

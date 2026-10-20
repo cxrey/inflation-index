@@ -545,62 +545,89 @@ def move_to_start(value: float, price_at_start: float, price_then: float) -> flo
     return value * price_at_start / price_then
 
 
+# A market value more than this many months older than the month it is used
+# for is too old: that asset has no market-size data then.
+STALE_AFTER_MONTHS = 12
+
+
+def latest_moved_forward(values: pd.DataFrame, month, prices: pd.DataFrame) -> float | None:
+    """The latest market value at or before `month`, moved forward to `month`
+    by the asset's own price change. Used for every asset, so a source that
+    publishes late (such as the Dallas Fed, a month behind) still counts.
+    None if there is no value yet, the latest is more than 12 months older
+    than `month`, or a price is missing.
+    Example: a value of 100 from last month, with the price up 1% since -> 101.
+    """
+    latest = latest_at_or_before(values, month)
+    if latest is None:
+        return None
+    dated, value = latest
+    if months_between(dated, month) > STALE_AFTER_MONTHS:
+        return None
+    price_now, price_then = value_at(prices, month), value_at(prices, dated)
+    if price_now is None or price_then is None:
+        return None
+    return move_to_start(value, price_now, price_then)
+
+
 def stock_market_value(start, year_end_values: pd.DataFrame, sp500: pd.DataFrame) -> float | None:
     """US stocks: the latest year-end value (World Bank, dated December) at or
     before the start month, moved to it by the S&P 500's price change.
     None before December 1975, the first year-end."""
-    latest = latest_at_or_before(year_end_values, start)
-    if latest is None:
-        return None
-    month, value = latest
-    price_at_start, price_then = value_at(sp500, start), value_at(sp500, month)
-    if price_at_start is None or price_then is None:
-        return None
-    return move_to_start(value, price_at_start, price_then)
+    return latest_moved_forward(year_end_values, start, sp500)
+
+
+def add_tables(*tables: pd.DataFrame) -> pd.DataFrame:
+    """Add several (date, value) tables together, keeping only dates that all
+    of them have: households' homes + landlords' homes = all US homes."""
+    values = pd.concat([table.set_index("date")["value"] for table in tables], axis=1).dropna()
+    return pd.DataFrame({"date": values.index, "value": values.sum(axis=1).to_numpy()})
 
 
 def home_market_value(start, quarterly_millions: pd.DataFrame, home_prices: pd.DataFrame) -> float | None:
     """US homes: the latest quarter-end value at or before the start month (FRED,
     in millions; a quarter dated by its first month ends two months later),
     moved to the start month by the home price index's change."""
-    quarter_ends = quarterly_millions.assign(date=quarterly_millions["date"] + pd.DateOffset(months=2))
-    latest = latest_at_or_before(quarter_ends, start)
-    if latest is None:
-        return None
-    month, millions = latest
-    price_at_start, price_then = value_at(home_prices, start), value_at(home_prices, month)
-    if price_at_start is None or price_then is None:
-        return None
-    return move_to_start(millions * DOLLARS_PER_MILLION, price_at_start, price_then)
+    quarter_ends = quarterly_millions.assign(
+        date=quarterly_millions["date"] + pd.DateOffset(months=2),
+        value=quarterly_millions["value"] * DOLLARS_PER_MILLION,
+    )
+    return latest_moved_forward(quarter_ends, start, home_prices)
 
 
-def crypto_market_value(start, monthly_caps: pd.DataFrame) -> float | None:
-    """A coin: its average market cap in the start month (None if there is none)."""
-    return value_at(monthly_caps, start)
+def crypto_market_value(start, monthly_caps: pd.DataFrame, coin_prices: pd.DataFrame) -> float | None:
+    """A coin: its average market cap in the start month, or the latest month
+    before it moved forward by the coin's price change."""
+    return latest_moved_forward(monthly_caps, start, coin_prices)
 
 
 def treasury_market_value(start, market_value_billions: pd.DataFrame, bills_monthly_millions: pd.DataFrame,
-                          bills_quarterly_millions: pd.DataFrame) -> float | None:
+                          bills_quarterly_millions: pd.DataFrame, treasury_prices: pd.DataFrame) -> float | None:
     """10-year Treasury: longer-term Treasuries = the market value of all
-    marketable Treasury debt in the start month (Dallas Fed, billions) minus
-    the face value of Treasury bills (millions). Bills: the Treasury's monthly
-    figure for the start month; before that starts (January 2001), the Fed's
-    latest quarter-end at or before the start month (a quarter dated by its
-    first month ends two months later).
+    marketable Treasury debt (Dallas Fed, billions) minus the face value of
+    Treasury bills (millions), in the latest month the Dallas Fed has at or
+    before the start month, moved forward by the 10-year Treasury index.
+    Bills: the Treasury's monthly figure for that month; before that starts
+    (January 2001), the Fed's latest quarter-end at or before it (a quarter
+    dated by its first month ends two months later).
     Example: $100 billion minus $20,000 million of bills = $80 billion.
     """
-    total = value_at(market_value_billions, start)
-    if total is None:
+    latest = latest_at_or_before(market_value_billions, start)
+    if latest is None:
         return None
-    if not bills_monthly_millions.empty and start >= bills_monthly_millions["date"].min():
-        bills = value_at(bills_monthly_millions, start)
+    dated, total = latest
+    if not bills_monthly_millions.empty and dated >= bills_monthly_millions["date"].min():
+        bills = value_at(bills_monthly_millions, dated)
     else:
         quarter_ends = bills_quarterly_millions.assign(date=bills_quarterly_millions["date"] + pd.DateOffset(months=2))
-        latest = latest_at_or_before(quarter_ends, start)
-        bills = None if latest is None else latest[1]
+        latest_bills = latest_at_or_before(quarter_ends, dated)
+        bills = None if latest_bills is None else latest_bills[1]
     if bills is None:
         return None
-    return total * DOLLARS_PER_BILLION - bills * DOLLARS_PER_MILLION
+    longer_term = pd.DataFrame({
+        "date": [dated], "value": [total * DOLLARS_PER_BILLION - bills * DOLLARS_PER_MILLION],
+    })
+    return latest_moved_forward(longer_term, start, treasury_prices)
 
 
 def gold_stock_table(production: dict[int, float], anchor_tonnes: float, anchor_date,
@@ -632,12 +659,18 @@ def investment_gold(stock_tonnes: float, investment_tonnes: float, anchor_tonnes
 
 def gold_market_value(start, investment_by_year_end: dict[int, float], gold_prices: pd.DataFrame) -> float | None:
     """Gold: investment tonnes at the latest year-end at or before the start month
-    (a year-end counts as December) × ounces per tonne × the start month's price."""
-    years = [year for year in investment_by_year_end if pd.Timestamp(year=year, month=12, day=1) <= start]
+    (a year-end counts as December) × ounces per tonne × the start month's price.
+    The start month's price already moves the value forward; a year-end more
+    than 12 months before the start month is too old (no data)."""
+    tonnes = pd.DataFrame({
+        "date": [pd.Timestamp(year=year, month=12, day=1) for year in investment_by_year_end],
+        "value": [tonnes * OUNCES_PER_TONNE for tonnes in investment_by_year_end.values()],
+    })
+    latest = latest_at_or_before(tonnes, start)
     price = value_at(gold_prices, start)
-    if not years or price is None:
+    if latest is None or price is None or months_between(latest[0], start) > STALE_AFTER_MONTHS:
         return None
-    return investment_by_year_end[max(years)] * OUNCES_PER_TONNE * price
+    return latest[1] * price
 
 
 def cannot_measure(checked: list[str], market_values: dict[str, float | None]) -> dict[str, str]:
@@ -738,3 +771,72 @@ def treasury_index(yields: pd.DataFrame) -> pd.DataFrame:
         price = bond_price(rates[month - 1], rates[month], TREASURY_YEARS - MONTH)
         levels.append(levels[-1] * price)
     return pd.DataFrame({"date": months, "value": levels})
+
+
+def rate_shortcut(name: str, yields: pd.DataFrame) -> tuple[str, float]:
+    """The latest monthly value of a yield series (columns date, value; in %)
+    for a "Your rate" shortcut button, with the text shown under the box:
+    ("10-year Treasury yield, September 2026", 4.99)."""
+    latest = yields.loc[yields["date"].idxmax()]
+    return f"{name}, {latest['date']:%B %Y}", float(latest["value"])
+
+
+# --- Version 1.3: market-size weights updated every January ---
+
+def yearly_market_index(prices: pd.DataFrame, start, market_value) -> tuple[pd.Series, dict]:
+    """The basket with market-size weights at the start month, set again to
+    market size every January after it (chain-linked):
+
+        I_t = I_J × Σ w_i,J × (p_i,t / p_i,J)
+
+    where J is the latest reweighting month (the start month before the first
+    January) and the weights w_i,J add up to 1.
+
+    prices: one column per checked asset, one row per month from the start
+        month (rows may skip a month); empty (NaN) where an asset has no price.
+    market_value(asset, month): the asset's market value in dollars then, or
+        None when there is no market-size data for that month.
+
+    An asset with no price or no market-size data at the start month joins at
+    the first January when it has both. If an asset already in the basket has
+    no market-size data at a January, that January is skipped (the basket is
+    held on, as with no reweighting) so no asset is dropped for missing data.
+
+    Returns (index, reweights): the index (100 at the start month; empty in a
+    month where an asset in the basket has no price), and the weights set at
+    the start month and at each January, {month: {asset: fraction}}.
+    Example: A and B at 1/2 each; A doubles in year 1, so in January the
+    weights become 2/3 and 1/3; B doubles in year 2: 150 × (2/3 + 1/3 × 2) = 200.
+    """
+    data = prices.loc[start:]
+
+    def weigh(month) -> dict[str, float]:
+        """Market-size weights among the assets with a price and market-size data in `month`."""
+        values = {}
+        for asset in data.columns:
+            if pd.notna(data.at[month, asset]):
+                value = market_value(asset, month)
+                if value is not None and value > 0:
+                    values[asset] = value
+        total = sum(values.values())
+        return {asset: value / total for asset, value in values.items()}
+
+    weights = weigh(start)
+    if not weights:
+        raise ValueError(f"No asset has a price and market-size data in {start:%B %Y}.")
+    reweights = {start: weights}
+    base, level = start, 100.0
+    levels = {}
+    for month in data.index:
+        if any(pd.isna(data.at[month, asset]) for asset in weights):
+            levels[month] = float("nan")
+            continue
+        levels[month] = level * sum(
+            weight * data.at[month, asset] / data.at[base, asset] for asset, weight in weights.items()
+        )
+        if month.month == 1 and month != start:
+            new = weigh(month)
+            if set(weights) <= set(new):  # every asset in the basket can still be measured
+                weights, base, level = new, month, levels[month]
+                reweights[month] = new
+    return pd.Series(levels, name=INDEX_NAME), reweights

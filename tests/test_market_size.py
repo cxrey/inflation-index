@@ -8,6 +8,7 @@ from calc import (
     NO_DATA_REASON,
     OUNCES_PER_TONNE,
     SILVER_PLATINUM_REASON,
+    add_tables,
     cannot_measure,
     crypto_market_value,
     gold_market_value,
@@ -19,6 +20,7 @@ from calc import (
     move_to_start,
     stock_market_value,
     treasury_market_value,
+    yearly_market_index,
 )
 
 ANCHOR_DATE = pd.Timestamp("2026-06-30")
@@ -125,50 +127,102 @@ def test_homes_quarter_end_moved_to_start_month():
     assert home_market_value(pd.Timestamp("2024-02-01"), homes, prices) is None
 
 
+def test_all_us_homes_is_the_sum_of_both_series():
+    # Households' homes 54,073,947 + landlords' homes 10,603,430 (millions, Q2 2026)
+    # = 64,677,377 million = $64.68 trillion. A date only one series has is left out.
+    households = table({"2026-01": 52_942_961.0, "2026-04": 54_073_947.0})
+    landlords = table({"2026-04": 10_603_430.0})
+    total = add_tables(households, landlords)
+    assert total["value"].tolist() == [64_677_377.0]
+    assert total["date"].tolist() == [pd.Timestamp("2026-04-01")]
+    # With home prices unchanged since the quarter ended in June: $64.68 trillion in July 2026.
+    prices = table({"2026-06": 300.0, "2026-07": 300.0})
+    assert home_market_value(pd.Timestamp("2026-07-01"), total, prices) == pytest.approx(64_677_377e6)
+
+
 # --- 10-year Treasury (Dallas Fed market value minus bills) ---
 
 DALLAS = table({"1990-05": 2_000.0, "2024-01": 100.0, "2024-02": 101.0})  # billions
 BILLS_MONTHLY = table({"2001-01": 500_000.0, "2024-01": 20_000.0})  # millions, from January 2001
 BILLS_QUARTERLY = table({"1990-01": 400_000.0, "1990-04": 450_000.0})  # millions, quarter-ends Mar and Jun
+NO_BILLS = table({})
+# The 10-year Treasury index, unchanged in every month these tests use.
+TREASURY = table({month: 100.0 for month in ["1989-12", "1990-05", "2024-01", "2024-02", "2024-03"]})
 
 
 def test_treasury_market_size():
     # $100 billion minus $20,000 million of bills = $80 billion.
-    value = treasury_market_value(pd.Timestamp("2024-01-01"), DALLAS, BILLS_MONTHLY, BILLS_QUARTERLY)
+    value = treasury_market_value(pd.Timestamp("2024-01-01"), DALLAS, BILLS_MONTHLY, BILLS_QUARTERLY, TREASURY)
     assert value == pytest.approx(80e9, abs=1e-3)
 
 
 def test_treasury_before_2001_uses_the_feds_quarter_end():
     # May 1990: the quarter dated January ends in March ($400,000 million);
     # the one dated April ends in June, after May. $2,000 billion - $400 billion = $1,600 billion.
-    value = treasury_market_value(pd.Timestamp("1990-05-01"), DALLAS, BILLS_MONTHLY, BILLS_QUARTERLY)
+    value = treasury_market_value(pd.Timestamp("1990-05-01"), DALLAS, BILLS_MONTHLY, BILLS_QUARTERLY, TREASURY)
     assert value == pytest.approx(1_600e9, abs=1e-3)
 
 
 def test_treasury_without_data():
-    # Before the first bills figure, or a month the Dallas Fed hasn't published: no data.
-    for start in ("1989-12-01", "2024-03-01"):
-        value = treasury_market_value(pd.Timestamp(start), DALLAS, BILLS_MONTHLY, BILLS_QUARTERLY)
-        assert value is None
-        assert cannot_measure(["10-year Treasury"], {"10-year Treasury": value}) == {
-            "10-year Treasury": NO_DATA_REASON
-        }
-    # February 2024: the Dallas Fed has it, but the Treasury's bills figure doesn't.
-    assert treasury_market_value(pd.Timestamp("2024-02-01"), DALLAS, BILLS_MONTHLY, BILLS_QUARTERLY) is None
+    # Before the first market value or bills figure: no data.
+    value = treasury_market_value(pd.Timestamp("1989-12-01"), DALLAS, BILLS_MONTHLY, BILLS_QUARTERLY, TREASURY)
+    assert value is None
+    assert cannot_measure(["10-year Treasury"], {"10-year Treasury": value}) == {"10-year Treasury": NO_DATA_REASON}
+    # February 2024 (and March, which falls back to February): the Dallas Fed
+    # has it, but the Treasury's bills figure doesn't.
+    for start in ("2024-02-01", "2024-03-01"):
+        assert treasury_market_value(pd.Timestamp(start), DALLAS, BILLS_MONTHLY, BILLS_QUARTERLY, TREASURY) is None
+
+
+def test_lagged_value_moved_forward_and_stale_value_skips_january():
+    # The Dallas Fed's latest month is December 2024: $100 billion - $20,000 million = $80 billion.
+    dallas, bills = table({"2024-12": 100.0}), table({"2024-12": 20_000.0})
+    treasury = table({"2024-12": 100.0, "2025-01": 101.0, "2026-01": 101.0})
+    # January 2025: last month's value with the 10-year Treasury up 1% since -> $80.8 billion (101%).
+    january_2025 = treasury_market_value(pd.Timestamp("2025-01-01"), dallas, bills, NO_BILLS, treasury)
+    assert january_2025 == pytest.approx(80.8e9, abs=1e-3)
+    # January 2026: the latest value is 13 months old -> no data.
+    assert treasury_market_value(pd.Timestamp("2026-01-01"), dallas, bills, NO_BILLS, treasury) is None
+
+    # In the yearly basket: January 2025 is reweighted (no skip), January 2026 is skipped.
+    months = pd.to_datetime(["2024-12-01", "2025-01-01", "2026-01-01"])
+    prices = pd.DataFrame({"10-year Treasury": [100.0, 101.0, 101.0], "A": [1.0, 1.0, 1.0]}, index=months)
+
+    def market_value(asset, month):
+        if asset == "A":
+            return 80e9
+        return treasury_market_value(month, dallas, bills, NO_BILLS, treasury)
+
+    _, reweights = yearly_market_index(prices, months[0], market_value)
+    assert list(reweights) == [months[0], months[1]]
+    # January 2025: $80.8 billion against A's $80 billion.
+    assert reweights[months[1]]["10-year Treasury"] == pytest.approx(80.8 / 160.8, abs=1e-9)
+
+
+def test_stale_after_12_months():
+    # A year-end value from December 2023 still counts in December 2024 (12 months),
+    # but not in January 2025 (13 months).
+    year_ends = table({"2023-12": 100.0})
+    sp500 = table({"2023-12": 10.0, "2024-12": 11.0, "2025-01": 11.0})
+    assert stock_market_value(pd.Timestamp("2024-12-01"), year_ends, sp500) == pytest.approx(110, abs=1e-9)
+    assert stock_market_value(pd.Timestamp("2025-01-01"), year_ends, sp500) is None
 
 
 # --- Crypto (monthly average market caps) ---
 
 def test_solana_from_may_2020():
     caps = table({"2020-05": 5.3e6, "2020-06": 10.8e6})
-    assert crypto_market_value(pd.Timestamp("2020-05-01"), caps) == pytest.approx(5.3e6)
+    prices = table({"2020-04": 0.9, "2020-05": 1.0, "2020-06": 2.0, "2020-07": 2.2})
+    assert crypto_market_value(pd.Timestamp("2020-05-01"), caps, prices) == pytest.approx(5.3e6)
     assert market_size_weights(["S&P 500", "Solana"], {"S&P 500": 1e12, "Solana": 5.3e6})["Solana"] > 0
-    assert crypto_market_value(pd.Timestamp("2020-04-01"), caps) is None
+    assert crypto_market_value(pd.Timestamp("2020-04-01"), caps, prices) is None
+    # July 2020 has no market cap yet: June's, moved forward by the price (2.0 -> 2.2): 10.8 × 1.1 = 11.88 million.
+    assert crypto_market_value(pd.Timestamp("2020-07-01"), caps, prices) == pytest.approx(11.88e6)
 
 
 def test_bitcoin_basket_starting_in_2015():
     caps = table({"2015-01": 3.5e9})
-    value = crypto_market_value(pd.Timestamp("2015-01-01"), caps)
+    value = crypto_market_value(pd.Timestamp("2015-01-01"), caps, table({"2015-01": 250.0}))
     assert market_size_weights(["Bitcoin"], {"Bitcoin": value})["Bitcoin"] == 100.0
 
 

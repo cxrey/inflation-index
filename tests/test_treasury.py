@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from calc import bond_price, treasury_index
+from calc import bond_price, rate_shortcut, treasury_index
 
 
 def yields(values: list[float], start: str = "1953-04-01") -> pd.DataFrame:
@@ -40,3 +40,12 @@ def test_gap_in_yields_is_an_error():
     table = yields([4.0, 4.0, 4.0]).drop(index=1)  # May 1953 missing
     with pytest.raises(ValueError, match="gap before June 1953"):
         treasury_index(table)
+
+
+def test_rate_shortcuts_use_the_latest_month():
+    # The latest month is September 2026 (4.99%), even if the rows aren't in date order.
+    table = pd.DataFrame({"date": pd.to_datetime(["2026-09-01", "2026-07-01", "2026-08-01"]),
+                          "value": [4.99, 4.60, 4.68]})
+    assert rate_shortcut("10-year Treasury yield", table) == ("10-year Treasury yield, September 2026", 4.99)
+    table = pd.DataFrame({"date": pd.to_datetime(["2026-08-01", "2026-09-01"]), "value": [3.72, 3.94]})
+    assert rate_shortcut("3-month T-bill yield", table) == ("3-month T-bill yield, September 2026", 3.94)
