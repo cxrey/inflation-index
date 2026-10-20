@@ -559,23 +559,27 @@ def move_to_start(value: float, price_at_start: float, price_then: float) -> flo
 
 
 # A market value more than this many months older than the month it is used
-# for is too old: that asset has no market-size data then.
+# for is too old: that asset has no market-size data then. Figures published
+# once a year (World Bank stocks, the gold stock table) come out months after
+# the year-end they describe, so they may be up to 24 months old.
 STALE_AFTER_MONTHS = 12
+YEAR_END_STALE_AFTER_MONTHS = 24
 
 
-def latest_moved_forward(values: pd.DataFrame, month, prices: pd.DataFrame) -> float | None:
+def latest_moved_forward(values: pd.DataFrame, month, prices: pd.DataFrame,
+                         max_age: int = STALE_AFTER_MONTHS) -> float | None:
     """The latest market value at or before `month`, moved forward to `month`
     by the asset's own price change. Used for every asset, so a source that
     publishes late (such as the Dallas Fed, a month behind) still counts.
-    None if there is no value yet, the latest is more than 12 months older
-    than `month`, or a price is missing.
+    None if there is no value yet, the latest is more than `max_age` months
+    older than `month` (12, or 24 for year-end figures), or a price is missing.
     Example: a value of 100 from last month, with the price up 1% since -> 101.
     """
     latest = latest_at_or_before(values, month)
     if latest is None:
         return None
     dated, value = latest
-    if months_between(dated, month) > STALE_AFTER_MONTHS:
+    if months_between(dated, month) > max_age:
         return None
     price_now, price_then = value_at(prices, month), value_at(prices, dated)
     if price_now is None or price_then is None:
@@ -586,8 +590,9 @@ def latest_moved_forward(values: pd.DataFrame, month, prices: pd.DataFrame) -> f
 def stock_market_value(start, year_end_values: pd.DataFrame, sp500: pd.DataFrame) -> float | None:
     """US stocks: the latest year-end value (World Bank, dated December) at or
     before the start month, moved to it by the S&P 500's price change.
-    None before December 1975, the first year-end."""
-    return latest_moved_forward(year_end_values, start, sp500)
+    None before December 1975, the first year-end, or if the latest year-end
+    is more than 24 months old."""
+    return latest_moved_forward(year_end_values, start, sp500, YEAR_END_STALE_AFTER_MONTHS)
 
 
 def add_tables(*tables: pd.DataFrame) -> pd.DataFrame:
@@ -674,14 +679,14 @@ def gold_market_value(start, investment_by_year_end: dict[int, float], gold_pric
     """Gold: investment tonnes at the latest year-end at or before the start month
     (a year-end counts as December) × ounces per tonne × the start month's price.
     The start month's price already moves the value forward; a year-end more
-    than 12 months before the start month is too old (no data)."""
+    than 24 months before the start month is too old (no data)."""
     tonnes = pd.DataFrame({
         "date": [pd.Timestamp(year=year, month=12, day=1) for year in investment_by_year_end],
         "value": [tonnes * OUNCES_PER_TONNE for tonnes in investment_by_year_end.values()],
     })
     latest = latest_at_or_before(tonnes, start)
     price = value_at(gold_prices, start)
-    if latest is None or price is None or months_between(latest[0], start) > STALE_AFTER_MONTHS:
+    if latest is None or price is None or months_between(latest[0], start) > YEAR_END_STALE_AFTER_MONTHS:
         return None
     return latest[1] * price
 

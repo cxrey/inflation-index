@@ -199,13 +199,24 @@ def test_lagged_value_moved_forward_and_stale_value_skips_january():
     assert reweights[months[1]]["10-year Treasury"] == pytest.approx(80.8 / 160.8, abs=1e-9)
 
 
-def test_stale_after_12_months():
-    # A year-end value from December 2023 still counts in December 2024 (12 months),
-    # but not in January 2025 (13 months).
+def test_stale_after_12_months_or_24_for_year_end_figures():
+    # Monthly or quarterly data: a home value from the quarter ending December 2023
+    # still counts in December 2024 (12 months), but not in January 2025 (13 months).
+    homes = table({"2023-10": 100.0})  # the quarter dated October ends in December
+    home_prices = table({"2023-12": 10.0, "2024-12": 11.0, "2025-01": 11.0})
+    assert home_market_value(pd.Timestamp("2024-12-01"), homes, home_prices) == pytest.approx(110e6, abs=1e-3)
+    assert home_market_value(pd.Timestamp("2025-01-01"), homes, home_prices) is None
+    # Year-end figures (World Bank stocks): December 2023 still counts in
+    # December 2025 (24 months), but not in January 2026 (25 months).
     year_ends = table({"2023-12": 100.0})
-    sp500 = table({"2023-12": 10.0, "2024-12": 11.0, "2025-01": 11.0})
-    assert stock_market_value(pd.Timestamp("2024-12-01"), year_ends, sp500) == pytest.approx(110, abs=1e-9)
-    assert stock_market_value(pd.Timestamp("2025-01-01"), year_ends, sp500) is None
+    sp500 = table({"2023-12": 10.0, "2025-12": 12.0, "2026-01": 12.0})
+    assert stock_market_value(pd.Timestamp("2025-12-01"), year_ends, sp500) == pytest.approx(120, abs=1e-9)
+    assert stock_market_value(pd.Timestamp("2026-01-01"), year_ends, sp500) is None
+    # Gold (year-end stock table): end-2023 tonnes still count in December 2025, not in January 2026.
+    gold_prices = table({"2025-12": 2.0, "2026-01": 2.0})
+    assert gold_market_value(pd.Timestamp("2025-12-01"), {2023: 1.0}, gold_prices) == pytest.approx(
+        OUNCES_PER_TONNE * 2.0, abs=1e-6)
+    assert gold_market_value(pd.Timestamp("2026-01-01"), {2023: 1.0}, gold_prices) is None
 
 
 # --- Crypto (monthly average market caps) ---
