@@ -20,6 +20,8 @@ Sources:
   personal exemptions. Credits (for example California's exemption credit or
   Utah's standard-deduction credit) are left out: a fixed credit doesn't
   change the rate on extra income.
+  Georgia and South Carolina cut their rates after the table was published;
+  both are updated from their revenue departments (see below the table).
   Cross-checked against the official 2026 sources:
   - New York: NYS Department of Taxation and Finance, IT-2105-I (2026),
     https://www.tax.ny.gov/pdf/2026/inc/it2105i_2026.pdf (matches; head of
@@ -341,6 +343,24 @@ STATES["New York"]["brackets"]["head"] = [
 ]
 STATES["New York"]["standard_deduction"]["head"] = 11_200
 STATES["New Jersey"]["brackets"]["head"] = STATES["New Jersey"]["brackets"]["married"]  # Table B
+
+# Laws passed after the Tax Foundation table (February 2026), from the official sources:
+# - Georgia, H.B. 463 (signed May 11, 2026, for 2026): flat 4.99% (was 5.19%); standard deduction
+#   $15,000 single and head of household, $30,000 married filing jointly (was $12,000 / $24,000).
+#   Georgia Department of Revenue, "Important Tax Updates",
+#   https://dor.georgia.gov/taxes/important-tax-updates
+STATES["Georgia"]["brackets"] = {"single": [[0, 0.0499]], "married": [[0, 0.0499]]}
+STATES["Georgia"]["standard_deduction"] = {"single": 15_000, "married": 30_000, "head": 15_000}
+# - South Carolina, H. 4216 (signed March 30, 2026, from tax year 2026): 1.99% on taxable income
+#   under $30,000 and 5.21% above (was 0% / 3% / 6%), the same for every filing status; the
+#   federal standard deduction is replaced by the South Carolina Income Adjusted Deduction:
+#   $15,000 single, $22,500 head of household, $30,000 married filing jointly (it is reduced at
+#   higher incomes; that reduction is left out, like other phase-outs).
+#   South Carolina Department of Revenue, "Information about H. 4216",
+#   https://dor.sc.gov/news/information-about-h-4216
+STATES["South Carolina"]["brackets"] = {"single": [[0, 0.0199], [30_000, 0.0521]],
+                                        "married": [[0, 0.0199], [30_000, 0.0521]]}
+STATES["South Carolina"]["standard_deduction"] = {"single": 15_000, "married": 30_000, "head": 22_500}
 
 # New York City: brackets on New York taxable income.
 NYC = {

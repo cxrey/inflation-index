@@ -75,3 +75,11 @@ def test_selecting_a_row_fills_the_state_box():
     nyc_row = table.index[table["State"] == "New York (New York City)"][0]
     assert selected_state_rate(table, [nyc_row]) == pytest.approx(5.9 + 3.876)
     assert selected_state_rate(table, []) is None  # nothing selected
+
+
+def test_georgia_and_south_carolina_2026_laws():
+    # Georgia: flat 4.99% (H.B. 463). South Carolina single $100,000: 100,000 − 15,000 = 85,000,
+    # over $30,000, so 5.21% (H. 4216). Below $30,000 of taxable income: 1.99%.
+    assert rates("single", "Georgia", 100_000)[1] == pytest.approx(4.99)
+    assert rates("single", "South Carolina", 100_000)[1] == pytest.approx(5.21)
+    assert rates("single", "South Carolina", 40_000)[1] == pytest.approx(1.99)  # 40,000 − 15,000 = 25,000
