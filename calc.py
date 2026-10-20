@@ -669,3 +669,47 @@ def market_caption(state: dict | None, current_weights: dict[str, float], start)
     if start != state["start"]:
         lines.append("Start month changed; press again to update.")
     return lines
+
+
+# --- Version 1.3: the 10-year Treasury (price only) ---
+
+TREASURY_YEARS = 10  # the bond's life when bought
+MONTH = 1 / 12  # one month, in years
+
+
+def bond_price(coupon: float, bond_yield: float, years: float) -> float:
+    """Price per $1 of face value of a bond paying `coupon` per year in two
+    half-yearly payments, when the market wants `bond_yield` and `years` are
+    left (rates as fractions: 0.04 = 4%).
+
+    P = (c / y) × (1 − (1 + y/2)^(−2T)) + (1 + y/2)^(−2T); if y = c, P = 1.
+    Example: c = 4%, y = 5%, T = 10 -> 0.922054 (it pays less than the market
+    wants, so it sells below $1).
+    """
+    if bond_yield == coupon:
+        return 1.0
+    discount = (1 + bond_yield / 2) ** (-2 * years)
+    return coupon / bond_yield * (1 - discount) + discount
+
+
+def treasury_index(yields: pd.DataFrame) -> pd.DataFrame:
+    """A price-only index of 10-year Treasuries from monthly yields in %
+    (columns date, value; FRED GS10), starting at 100 in the first month.
+
+    Each month: last month a new 10-year bond was bought at $1, paying last
+    month's yield; this month it is priced at this month's yield with 10 years
+    minus 1 month left. The index is multiplied by that price. Interest is not
+    included (price only, like the other assets).
+    """
+    months = pd.to_datetime(yields["date"]).reset_index(drop=True)
+    rates = (yields["value"] / 100).reset_index(drop=True)
+    # Months counted from year 0, so consecutive months differ by exactly 1.
+    month_numbers = months.dt.year * 12 + months.dt.month
+    gaps = months[month_numbers.diff() > 1]
+    if not gaps.empty:
+        raise ValueError(f"The 10-year Treasury yield has a gap before {gaps.iloc[0]:%B %Y}.")
+    levels = [100.0]
+    for month in range(1, len(rates)):
+        price = bond_price(rates[month - 1], rates[month], TREASURY_YEARS - MONTH)
+        levels.append(levels[-1] * price)
+    return pd.DataFrame({"date": months, "value": levels})
