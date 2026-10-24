@@ -564,6 +564,9 @@ DOLLARS_PER_BILLION = 1_000_000_000  # the Dallas Fed's Treasury debt is in bill
 
 # Why an asset can't be weighted by market size.
 NO_DATA_REASON = "no market-size data for this date."
+NO_PRICE_REASON = "no price data for this date."
+# Missing only for this date: the asset starts at 0% and can join in a later January.
+WAIT_REASONS = (NO_DATA_REASON, NO_PRICE_REASON)
 SILVER_PLATINUM_REASON = "no reliable estimate of how much exists above ground."
 
 
@@ -721,11 +724,27 @@ def gold_market_value(start, investment_by_year_end: dict[int, float], gold_pric
     return latest[1] * price
 
 
-def cannot_measure(checked: list[str], market_values: dict[str, float | None]) -> dict[str, str]:
+def price_reason(prices: pd.DataFrame, start) -> str | None:
+    """Why an asset has no price in the start month, or None if it has one.
+    After its last month the asset can never join, so the reason says so
+    ("its prices end in July 2026, ..."); before its first month (or in a gap)
+    it can join later (NO_PRICE_REASON)."""
+    if value_at(prices, start) is not None:
+        return None
+    last = prices["date"].max()
+    if start > last:
+        return f"its prices end in {last:%B %Y}, before your start month. Pick {last:%B %Y} or earlier."
+    return NO_PRICE_REASON
+
+
+def cannot_measure(checked: list[str], market_values: dict[str, float | None],
+                   prices: dict[str, pd.DataFrame] | None = None, start=None) -> dict[str, str]:
     """The checked assets that can't be weighted by market size, each with the reason.
 
     market_values: the market value in dollars of each asset that has a market
     size at all (stocks, homes, gold, crypto); None means no data for this date.
+    prices (with start): each asset's price table, to say when the price, not
+    the market size, is what's missing at the start month.
     """
     reasons = {}
     for asset in checked:
@@ -743,6 +762,8 @@ def cannot_measure(checked: list[str], market_values: dict[str, float | None]) -
             )
         elif asset in ("Silver", "Platinum"):
             reasons[asset] = SILVER_PLATINUM_REASON
+        elif prices is not None and asset in prices and (missing := price_reason(prices[asset], start)):
+            reasons[asset] = missing
         elif market_values.get(asset) is None:
             reasons[asset] = NO_DATA_REASON
     return reasons
@@ -898,24 +919,29 @@ def market_weights_unchanged(state: dict | None, current_weights: dict[str, floa
     return len(lines) == 1 and lines[0].startswith("Market-size weights as of")
 
 
-def waiting_lines(waiting: list[str], reweights: dict, yearly: bool) -> list[str]:
-    """One line per asset that had no market-size data at the start month (so
-    it starts at 0%): when it joins, or that it stays at 0%.
+def waiting_lines(waiting: dict[str, str], reweights: dict, yearly: bool) -> list[str]:
+    """One line per asset that had no price or no market-size data at the
+    start month (so it starts at 0%): when it joins, or that it stays at 0%.
 
-    reweights: the weights set at the start month and each January
-    ({month: {asset: fraction}}, from yearly_market_index); yearly: whether
-    the weights are updated every January.
+    waiting: {asset: reason} (NO_PRICE_REASON or NO_DATA_REASON), so each line
+    names what was missing. reweights: the weights set at the start month and
+    each January ({month: {asset: fraction}}, from yearly_market_index);
+    yearly: whether the weights are updated every January.
     """
     joined = {}
     for month in sorted(reweights):
         for asset in reweights[month]:
             joined.setdefault(asset, month)
-    return [
-        f"{asset}: 0% until {joined[asset]:%B %Y}, when its market-size data starts."
-        if yearly and asset in joined else
-        f"{asset}: 0% (no market-size data at the start month)."
-        for asset in waiting
-    ]
+    lines = []
+    for asset, reason in waiting.items():
+        missing = "price" if reason == NO_PRICE_REASON else "market-size"
+        lines.append(
+            f"{asset}: 0% until {joined[asset]:%B %Y} (no {missing} data at the start month; "
+            f"it joins in the first January with both price and market-size data)."
+            if yearly and asset in joined else
+            f"{asset}: 0% (no {missing} data at the start month)."
+        )
+    return lines
 
 
 # --- Version 1.3: gold's range (market-size weights with gold) ---

@@ -6,7 +6,15 @@ Market value = quantity × price, so "no new supply" means a constant quantity.
 import pandas as pd
 import pytest
 
-from calc import asset_index, market_weights_unchanged, period_rates, waiting_lines, yearly_market_index
+from calc import (
+    NO_DATA_REASON,
+    NO_PRICE_REASON,
+    asset_index,
+    market_weights_unchanged,
+    period_rates,
+    waiting_lines,
+    yearly_market_index,
+)
 
 MONTHS = pd.to_datetime(["2020-01-01", "2020-07-01", "2021-01-01", "2021-07-01", "2022-01-01"])
 
@@ -114,16 +122,31 @@ def test_waiting_lines():
         pd.Timestamp("1975-06-01"): {"Gold": 1.0},
         pd.Timestamp("1976-01-01"): {"Gold": 0.4, "S&P 500": 0.6},
     }
-    assert waiting_lines(["S&P 500"], reweights, yearly=True) == [
-        "S&P 500: 0% until January 1976, when its market-size data starts."
+    # S&P 500 had a price but no market-size data at the start (before December 1975).
+    assert waiting_lines({"S&P 500": NO_DATA_REASON}, reweights, yearly=True) == [
+        "S&P 500: 0% until January 1976 (no market-size data at the start month; "
+        "it joins in the first January with both price and market-size data)."
     ]
     # Not updated every January: it stays at 0%.
-    assert waiting_lines(["S&P 500"], reweights, yearly=False) == [
+    assert waiting_lines({"S&P 500": NO_DATA_REASON}, reweights, yearly=False) == [
         "S&P 500: 0% (no market-size data at the start month)."
     ]
     # Updated every January, but never joined before the end month.
-    assert waiting_lines(["Bitcoin"], reweights, yearly=True) == [
+    assert waiting_lines({"Bitcoin": NO_DATA_REASON}, reweights, yearly=True) == [
         "Bitcoin: 0% (no market-size data at the start month)."
+    ]
+
+
+def test_waiting_lines_name_a_missing_price():
+    # US home prices (Case-Shiller) from January 1980: no price yet; it joins January 1988.
+    reweights = {pd.Timestamp("1980-01-01"): {"S&P 500": 1.0},
+                 pd.Timestamp("1988-01-01"): {"S&P 500": 0.5, "US home prices": 0.5}}
+    assert waiting_lines({"US home prices": NO_PRICE_REASON}, reweights, yearly=True) == [
+        "US home prices: 0% until January 1988 (no price data at the start month; "
+        "it joins in the first January with both price and market-size data)."
+    ]
+    assert waiting_lines({"US home prices": NO_PRICE_REASON}, reweights, yearly=False) == [
+        "US home prices: 0% (no price data at the start month)."
     ]
 
 

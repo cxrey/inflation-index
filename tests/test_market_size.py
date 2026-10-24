@@ -6,8 +6,10 @@ import pytest
 from calc import (
     DOLLARS_PER_MILLION,
     NO_DATA_REASON,
+    NO_PRICE_REASON,
     OUNCES_PER_TONNE,
     SILVER_PLATINUM_REASON,
+    WAIT_REASONS,
     add_tables,
     cannot_measure,
     crypto_market_value,
@@ -73,6 +75,26 @@ def test_silver_gets_its_message():
     reasons = cannot_measure(["Gold", "Silver"], {"Gold": 1e12})
     assert reasons == {"Silver": SILVER_PLATINUM_REASON}
     assert SILVER_PLATINUM_REASON == "no reliable estimate of how much exists above ground."
+
+
+def test_missing_price_is_told_apart_from_missing_market_size():
+    # Case-Shiller-like prices from January 1987 to July 2026; market size always available.
+    homes = table({"1987-01": 63.7, "2000-01": 100.0, "2026-07": 330.0})
+    prices = {"US home prices": homes}
+    values = {"US home prices": None}  # no market value can be worked out without a price
+    # Start 1980: no price yet -> it waits and can join later.
+    assert cannot_measure(["US home prices"], values, prices, pd.Timestamp("1980-01-01")) == {
+        "US home prices": NO_PRICE_REASON
+    }
+    # Start September 2026: prices end in July 2026 -> it can never join (the pop-up lists it).
+    assert cannot_measure(["US home prices"], values, prices, pd.Timestamp("2026-09-01")) == {
+        "US home prices": "its prices end in July 2026, before your start month. Pick July 2026 or earlier."
+    }
+    assert NO_PRICE_REASON in WAIT_REASONS and NO_DATA_REASON in WAIT_REASONS
+    # A price in the start month but no market value -> market-size data is what's missing.
+    assert cannot_measure(["US home prices"], values, prices, pd.Timestamp("2000-01-01")) == {
+        "US home prices": NO_DATA_REASON
+    }
 
 
 def test_no_data_at_the_start_month():

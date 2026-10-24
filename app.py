@@ -15,7 +15,7 @@ import streamlit as st
 from calc import (
     INDEX_NAME,
     NEW_YORK_PLACES,
-    NO_DATA_REASON,
+    WAIT_REASONS,
     can_compare,
     compare_states,
     estimate_tax_rates,
@@ -437,6 +437,11 @@ def market_values_at(start, assets: list[str]) -> dict[str, float | None]:
     return values
 
 
+def price_tables(assets: list[str]) -> dict[str, pd.DataFrame]:
+    """The price table of each of these assets that has been loaded."""
+    return {asset: tables[asset] for asset in assets if asset in tables}
+
+
 def market_value_of(asset: str, month) -> float | None:
     """One asset's market value in a month (for updating weights every January)."""
     return market_values_at(month, [asset])[asset]
@@ -534,14 +539,16 @@ def market_size_clicked():
 
 def apply_market_size(start):
     """Set every checked asset's weight to its share of the total market value.
-    If any checked asset can never be measured (Nasdaq, silver, platinum, a
-    city), change nothing and open the pop-up. An asset with no market-size
-    data only for this date starts at 0% and waits to join in a later January."""
+    If any checked asset can't be measured for this start month and can't join
+    later (Nasdaq, silver, platinum, a city, or prices that end before the
+    start month), change nothing and open the pop-up. An asset with no price
+    or market-size data only for this date starts at 0% and waits to join in a
+    later January."""
     assets = checked_assets()
     values = market_values_at(start, assets)
-    reasons = cannot_measure(assets, values)
-    never = {asset: reason for asset, reason in reasons.items() if reason != NO_DATA_REASON}
-    waiting = [asset for asset, reason in reasons.items() if reason == NO_DATA_REASON]
+    reasons = cannot_measure(assets, values, price_tables(assets), start)
+    never = {asset: reason for asset, reason in reasons.items() if reason not in WAIT_REASONS}
+    waiting = {asset: reason for asset, reason in reasons.items() if reason in WAIT_REASONS}
     measured = [asset for asset in assets if asset not in reasons]
     if never:
         cannot_weight_dialog(start, never, measured, waiting)
@@ -776,7 +783,8 @@ start_month = st.session_state.get("start") if months else None
 market_help = MARKET_SIZE_HELP
 market_ok = False
 if start_month is not None:
-    unmeasurable = cannot_measure(list(checked), market_values_at(start_month, list(checked)))
+    unmeasurable = cannot_measure(list(checked), market_values_at(start_month, list(checked)),
+                                  price_tables(list(checked)), start_month)
     market_ok = any(asset not in unmeasurable for asset in checked)
     if checked and not market_ok:
         market_help += f"\n\nNone of your ticked assets has market-size data for {month_name(start_month)}."
@@ -798,7 +806,7 @@ for line in market_lines:
 # Assets waiting to join (0% at the start month): filled in once the index is
 # worked out, because when they join depends on it.
 waiting_area = st.sidebar.container()
-waiting = (market_state or {}).get("waiting", [])
+waiting = (market_state or {}).get("waiting", {})  # {asset: why it waits}
 # Updating every January is only possible while the weights are exactly what
 # the button set; any edit, or another start month, turns it off.
 market_unchanged = market_weights_unchanged(market_state, checked, start_month)
